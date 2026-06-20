@@ -1,3 +1,4 @@
+#include "hwinit.h"
 #include "statistics.h"
 #include "mlx90614.h"
 #include "ds18b20.h"
@@ -16,6 +17,8 @@
 #include "spi.h"
 
 int main(void) {
+	HW_init();
+
     while(1) {
 
     }

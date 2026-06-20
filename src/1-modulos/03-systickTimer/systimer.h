@@ -48,8 +48,6 @@ class SysTimer : public TimedPeripheral{
 
 		void handler(void);					//	SysTick ISR handler ( virtual from TemporizedPeripherals )
 
-		friend void SysTick_Handler(void);	//	ISR handler
-
 		~SysTimer();	//	Destructor
 };
 
