@@ -39,7 +39,9 @@ class Uart{
 		volatile uint32_t m_headTxIndex;	//	Circular buffer
 		volatile uint32_t m_tailTxIndex;	//	Circular buffer
 		volatile bool m_flagTx;				//	Filling / Not Filling Tx Buffer
-		uint8_t m_matchIndex;
+
+		const char *m_sendPtr;
+		uint8_t m_readIndex;
 
 		void init(uint8_t uart);			//	Initializes UARTx
 		void isrHandler();					//	UARTx ISR handler

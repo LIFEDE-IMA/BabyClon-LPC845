@@ -289,4 +289,23 @@ typedef struct{
 
 #define CTIMER0 ((CTIMER_Type *) 0x40038000u)
 
+typedef struct {
+	volatile uint32_t CFG; 		// SPI Configuration register
+	volatile uint32_t DLY; 		// SPI Delay register
+	volatile uint32_t STAT; 	// SPI Status. Some status flags can be cleared by writing a 1 to that bit position
+	volatile uint32_t INTENSET; // SPI Interrupt Enable read and Set. A complete value may be read from this register. Writing a 1 to any implemented bit position causes that bit to be set.
+	volatile uint32_t INTENCLR; // SPI Interrupt Enable Clear. Writing a 1 to any implemented bit position causes the corresponding bit in INTENSET to be cleared.
+	volatile uint32_t RXDAT; 	// SPI Receive Data
+	volatile uint32_t TXDATCTL; // SPI Transmit Data with Control
+	volatile uint32_t TXDAT; 	// SPI Transmit Data.
+	volatile uint32_t TXCTL; 	// SPI Transmit Control
+	volatile uint32_t DIV; 		// SPI clock Divider
+	volatile uint32_t INTSTAT; 	// SPI Interrupt Status
+} SPI_Type;
+
+#define SPI0_BASE                                (0x40058000u)
+#define SPI0                                     ((SPI_Type *)SPI0_BASE)
+#define SPI1_BASE                                (0x4005C000u)
+#define SPI1                                     ((SPI_Type *)SPI1_BASE)
+
 #endif /* LPC845_H_ */

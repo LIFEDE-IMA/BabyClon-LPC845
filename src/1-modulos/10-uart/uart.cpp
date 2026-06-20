@@ -21,8 +21,9 @@ Uart::Uart(uint8_t uart) : m_uart(UARTS[uart]){
 	for(uint8_t i = 0; i < m_maxTxLen; i++) m_bufferTx[i] = 0;
 	m_headTxIndex = 0;
 	m_tailTxIndex = 0;
-	m_matchIndex = 0;
 	m_flagTx = false;
+	m_sendPtr = nullptr;
+	m_readIndex = 0;
 
 	uartInstance[uart] = this;
 
@@ -100,16 +101,22 @@ void Uart::init(uint8_t uart){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (Cap. 10),
 }
 
 void Uart::pushRx(uint8_t data){	//	ISR pushes data into rx buffer
-	m_bufferRx[m_tailRxIndex] = data;
-	m_tailRxIndex++;
-	m_tailRxIndex %= m_maxRxLen;	//	Cuando llega a m_maxRxLen se reinicia (cola circular)
+	uint32_t nextIndex = (m_tailRxIndex + 1) % m_maxRxLen;
+
+	if(nextIndex == m_headRxIndex){	//	When msg >> TxBuffer, Tx Interrupts cant empty faster than pushTx loads => Overrun
+			return;
+	}else{
+		m_bufferRx[m_tailRxIndex] = data;
+		m_tailRxIndex++;
+		m_tailRxIndex %= m_maxRxLen;	//	Resets when reaches [m_maxRxLen] value (circular buffer)
+	}
 }
 
 bool Uart::popRx(uint8_t *data){	//	App pops data from rx buffer
-	if(m_tailRxIndex != m_headRxIndex){	//	Si la "cola" no alcanzó a la "cabeza" => Puedo seguir sacando datos
-		*data = m_bufferRx[m_headRxIndex];	//	Leo el buffer
+	if(m_tailRxIndex != m_headRxIndex){	//	If the "tail" didnt catch the "head" => It can keep popping data
+		*data = m_bufferRx[m_headRxIndex];	//	Read buffer
 		m_headRxIndex++;
-		m_headRxIndex %= m_maxRxLen;	//	Cuando llega a m_maxRxLen se reinicia (cola circular)
+		m_headRxIndex %= m_maxRxLen;	//	Resets when reaches [m_maxRxLen] value (circular buffer)
 		return true;
 	}
 	return false;
@@ -123,39 +130,37 @@ bool Uart::pushTx(uint8_t data){	//	App pushes data into tx buffer
 	}else{
 		m_bufferTx[m_tailTxIndex] = data;
 		m_tailTxIndex++;
-		m_tailTxIndex %= m_maxTxLen;	//	Cuando llega a m_maxTxLen se reinicia (cola circular)
+		m_tailTxIndex %= m_maxTxLen;	//	Resets when reaches [m_maxRxLen] value (circular buffer)
 		return true;		//	m_headTxIndex is modified by ISR, so when Tx Interrupt reads, we can push in Tx Buffer
 	}
 }
 
 bool Uart::popTx(uint8_t *data){	//	ISR pops data from tx buffer
-	if(m_tailTxIndex != m_headTxIndex){	//	Si la "cola" no alcanzó a la "cabeza" => Puedo seguir sacando datos
-		*data = m_bufferTx[m_headTxIndex];	//	Leo el buffer
+	if(m_tailTxIndex != m_headTxIndex){	//	If the "tail" didnt catch the "head" => It can keep popping data
+		*data = m_bufferTx[m_headTxIndex];	//	Reads buffer
 		m_headTxIndex++;
-		m_headTxIndex %= m_maxTxLen;	//	Cuando llega a m_maxTxLen se reinicia (cola circular)
+		m_headTxIndex %= m_maxTxLen;	//	Resets when reaches [m_maxRxLen] value (circular buffer)
 		return true;
 	}
 	return false;
 }
 
 bool Uart::sendStr(const char *msg){
-	static const char *p = nullptr;		//	Keeps its value through function calls
+	if(msg != nullptr && m_sendPtr == nullptr) m_sendPtr = msg;
 
-	if(msg != nullptr && p == nullptr) p = msg;
+	if(!m_sendPtr) return true;
 
-	if(!p) return true;
-
-	if(*p){
-		if(Uart::pushTx(*p)){	//	Cargo un char en tx buffer
-			p++;				//	Paso a la siguiente posición del string
+	if(*m_sendPtr){
+		if(Uart::pushTx(*m_sendPtr)){	//	Pushes one char into Tx buffer
+			m_sendPtr++;				//	Next string position
 		}
 	}else{
-		p = nullptr;
+		m_sendPtr = nullptr;
 		return true;
 	}
 
 	if(!m_flagTx){
-		m_flagTx = true;	//	Estoy cargando el buffer Tx
+		m_flagTx = true;	//	Writing Tx buffer
 		m_uart->INTENSET = (1 << 2);	//	Enable Tx Interrupt
 	}
 	return false;
@@ -163,16 +168,15 @@ bool Uart::sendStr(const char *msg){
 
 uint8_t Uart::readStr(char *msg, uint32_t maxLen){
 	uint8_t data = 0;
-	static uint8_t index = 0;		//	Keeps its value throughout function calls
 
 	if(Uart::popRx(&data)){
-		if(index < maxLen - 1){
-			msg[index++] = data;	//	Writes read buffer
+		if(m_readIndex < maxLen - 1){
+			msg[m_readIndex++] = data;	//	Writes read buffer
 		}
 
-		if((index >= maxLen - 1) || (data == 0)){
-			data = index;
-			index = 0;
+		if((m_readIndex >= maxLen - 1) || (data == 0)){
+			data = m_readIndex;
+			m_readIndex = 0;
 			return data;
 		}
 	}

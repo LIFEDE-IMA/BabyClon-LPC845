@@ -8,7 +8,7 @@
  *  This class was written to contain statistics operations ( methods )
  */
 
-#include <1-statistics/statistics.h>
+#include "statistics.h"
 
 Statistics::Statistics(){}
 

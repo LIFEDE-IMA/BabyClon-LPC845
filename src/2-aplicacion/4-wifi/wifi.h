@@ -16,6 +16,7 @@
 #include "my_string.h"
 
 #define MAX_CMD_LEN 300		//	Max command AT length
+#define MAX_SRCH_LEN 128	//	Max search buffer length
 #define MAX_BDY_LEN 150		//	Max body length (POST PROTOCOL)
 #define MAX_RQST_LEN 400	//	Max request length (POST PROTOCOL)
 
@@ -31,6 +32,8 @@ class WiFi{
 		uint8_t m_httpBodyLen;
 		uint16_t m_httpRequestLen;
 
+		char m_searchBuffer[MAX_SRCH_LEN];
+		uint16_t m_searchIndex;
 		char m_cmdBuffer[MAX_CMD_LEN];
 
 		enum initStates_t{

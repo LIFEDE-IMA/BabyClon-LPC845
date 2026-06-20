@@ -6,35 +6,46 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  */
 
-#include <4-wifi/wifi.h>
+#include "wifi.h"
 
 WiFi::WiFi(Uart &uart) : m_wUart(uart){
 	m_initState = initStates_t::iIDLE;
 	m_uploadState = uploadStates_t::uIDLE;
 	m_wifiError = errors_t::NONE;
+	m_searchIndex = 0;
+	m_searchBuffer[0] = '\0';
 }
 
 uint8_t WiFi::search4(const char* target){
-	static char buffer[MAX_RX_LEN];
-	static uint16_t index = 0;
 	uint8_t data = 0;
 
 	if(m_wUart.popRx(&data)){
-		if(index < MAX_RX_LEN - 1){
-			buffer[index++] = data;
-			buffer[index] = '\0';
-		}else{
-			index = 0;
+		if(m_searchIndex < MAX_SRCH_LEN - 1){
+			m_searchBuffer[m_searchIndex++] = data;
+			m_searchBuffer[m_searchIndex] = '\0';
+		}else{	//	If searchBuffer fills up, keeps the most recent half to avoid the risk of losing the target
+			for(uint16_t idx = 0; idx < (MAX_SRCH_LEN / 2); idx++)
+				m_searchBuffer[idx] = m_searchBuffer[(idx + (MAX_SRCH_LEN / 2))];
+
+			m_searchIndex = (MAX_SRCH_LEN / 2);
+			m_searchBuffer[m_searchIndex] = '\0';
 		}
-		if(String::strstr(buffer, target)){
-			index = 0;
-			buffer[0] = '\0';
+
+		if(String::strstr(m_searchBuffer, target)){
+			m_searchIndex = 0;
+			m_searchBuffer[0] = '\0';
 			return 1;
 		}
-		if(String::strstr(buffer,"ALREADY CONNECTED")){
+
+		if(String::strstr(m_searchBuffer,"ALREADY CONNECTED")){
+			m_searchIndex = 0;
+			m_searchBuffer[0] = '\0';
 			return 1;
 		}
-		if(String::strstr(buffer, "ERROR")){
+
+		if(String::strstr(m_searchBuffer, "ERROR")){
+			m_searchIndex = 0;
+			m_searchBuffer[0] = '\0';
 			return 2;
 		}
 	}

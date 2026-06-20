@@ -6,4 +6,3 @@ NOT FINISHED, missing:
 - DAC
 - COMPARATOR
 - PWM
-- SPI

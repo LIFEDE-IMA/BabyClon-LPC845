@@ -6,7 +6,7 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  */
 
-#include <2-mlx90614/mlx90614.h>
+#include "mlx90614.h"
 
 MLX90614::MLX90614(I2C &i2cMaster) : m_i2cMaster(i2cMaster){
 	m_objTemp = m_ambTemp = 0;
