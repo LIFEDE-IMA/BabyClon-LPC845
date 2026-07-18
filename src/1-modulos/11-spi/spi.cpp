@@ -132,7 +132,7 @@ SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
 			| ( spi_CPHA << 4 )		// 0= Change. The SPI captures serial data on the first clock transition of the transfer (when the clock changes away from the rest state). Data is changed on the following edge. 1=  Capture. The SPI changes serial data on the first clock transition of the transfer (when the clock changes away from the rest state). Data is captured on the following edge.
 			| ( spi_CPOL << 5 );	// 0= The rest state of the clock (between transfers) is low  1= The rest state of the clock (between transfers) is high.
 
-	m_spi->DIV = ( 48000000UL / clk_freq ) - 1;
+	m_spi->DIV = ( FREQ_CLOCK / clk_freq ) - 1;
 
 	m_spi->INTENSET |= ( 1 << 0 );		// RX interrupcion
 
