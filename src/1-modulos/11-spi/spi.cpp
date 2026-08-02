@@ -7,8 +7,11 @@
  */
 
 #include "spi.h"
+#include "swm.h"
 
-// Mask just to change global config bits
+// Defines para funciones:
+
+// la mascara para solo cambiar los bits de configuración global
 #define SPI_CFG_CONFIGURATION_MASK (0b111101)
 
 #define SPI_TXRDY_MASK (1 << 1)
@@ -23,23 +26,23 @@
 
 SPI_Type*  SPIs[]={ SPI0, SPI1 };
 
-SPI *g_spi[ 2 ];
+Spi *g_spi[ 2 ];
 
 // ######################
 // #                    #
-// #    Part 1:  SPI    #
+// #    Parte 1: SPI    #
 // #                    #
 // ######################
 
-SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
-			bool portMISO , uint8_t pinMISO ,
-			bool portSCK  , uint8_t pinSCK  ,
-			SPI_NUMBER N_spi,
-			uint32_t clk_freq,
-			uint32_t max_packets,
-			SPI_CFG_BIT_ORDER_t spi_BITO,
-			SPI_CFG_CPHA_t 		spi_CPHA,
-			SPI_CFG_CPOL_t		spi_CPOL
+Spi::Spi( 		bool portMOSI , uint8_t pinMOSI ,
+				bool portMISO , uint8_t pinMISO ,
+				bool portSCK  , uint8_t pinSCK  ,
+				SPI_NUMBER N_spi,
+				uint32_t clk_freq,
+				uint32_t max_packets,
+				SPI_CFG_BIT_ORDER_t spi_BITO,
+				SPI_CFG_CPHA_t 		spi_CPHA,
+				SPI_CFG_CPOL_t		spi_CPOL
 			) : m_max_packets(max_packets), m_spi_n(N_spi)
 {
 	uint8_t iser ;
@@ -53,6 +56,12 @@ SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
 
 	index_TX = 0;
 	index_RX = 0;
+
+	current_packet.TX_data = nullptr;		//	Agregado por Mati3 (31/07/26)
+	current_packet.RX_data = nullptr;		//	Bug de hardFault al crear el primer paquete
+	current_packet.done_flag = nullptr;
+	current_packet.n_bytes = 0;
+	current_packet.slave = 0;
 
 	SYSCON->SYSAHBCLKCTRL0 |= (1 << 7); // Habilito la switch matrix. 7 = SWM
 
@@ -72,17 +81,9 @@ SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
 			// el 3 se hace abajo, no inporta el orden (?
 
 			// 4: configurar sw matrix
-			if(portSCK == 1) pinSCK = pinSCK + 32;
-			SWM->PINASSIGN[ 15 / 4 ] &= ~(0xff << ((15 % 4) * 8));	//	PINASSIGN_Config(PA_SPI0_SCK,  portSCK,  pinSCK );
-			SWM->PINASSIGN[ 15 / 4 ] |= pinSCK << ((15 % 4) * 8);
-
-			if(portMOSI == 1) pinMOSI = pinMOSI + 32;
-			SWM->PINASSIGN[ 16 / 4 ] &= ~(0xff << ((16 % 4) * 8));	//	PINASSIGN_Config(PA_SPI0_MOSI, portMOSI, pinMOSI);
-			SWM->PINASSIGN[ 16 / 4 ] |= pinMOSI << ((16 % 4) * 8);
-
-			if(portMISO == 1) pinMISO = pinMISO + 32;
-			SWM->PINASSIGN[ 17 / 4 ] &= ~(0xff << ((17 % 4) * 8));	//	PINASSIGN_Config(PA_SPI0_MISO, portMISO, pinMISO);
-			SWM->PINASSIGN[ 17 / 4 ] |= pinMISO << ((17 % 4) * 8);
+			PINASSIGN_Config(PA_SPI0_SCK,  portSCK,  pinSCK );
+			PINASSIGN_Config(PA_SPI0_MOSI, portMOSI, pinMOSI);
+			PINASSIGN_Config(PA_SPI0_MISO, portMISO, pinMISO);
 
 			// 5: habilitación de clock
 			SYSCON->FCLKSEL[ 9 ] = 1;
@@ -101,17 +102,9 @@ SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
 			// el 3 se hace abajo, no inporta el orden (?
 
 			// 4: configurar sw matrix
-			if(portSCK == 1) pinSCK = pinSCK + 32;
-			SWM->PINASSIGN[ 22 / 4 ] &= ~(0xff << ((22 % 4) * 8));	//	PINASSIGN_Config(PA_SPI1_SCK,  portSCK,  pinSCK );
-			SWM->PINASSIGN[ 22 / 4 ] |= pinSCK << ((22 % 4) * 8);
-
-			if(portMOSI == 1) pinMOSI = pinMOSI + 32;
-			SWM->PINASSIGN[ 23 / 4 ] &= ~(0xff << ((23 % 4) * 8));	//	PINASSIGN_Config(PA_SPI1_MOSI, portMOSI, pinMOSI);
-			SWM->PINASSIGN[ 23 / 4 ] |= pinMOSI << ((23 % 4) * 8);
-
-			if(portMISO == 1) pinMISO = pinMISO + 32;
-			SWM->PINASSIGN[ 24 / 4 ] &= ~(0xff << ((24 % 4) * 8));	//	PINASSIGN_Config(PA_SPI1_MISO, portMISO, pinMISO);
-			SWM->PINASSIGN[ 24 / 4 ] |= pinMISO << ((24 % 4) * 8);
+			PINASSIGN_Config(PA_SPI1_SCK,  portSCK,  pinSCK );
+			PINASSIGN_Config(PA_SPI1_MOSI, portMOSI, pinMOSI);
+			PINASSIGN_Config(PA_SPI1_MISO, portMISO, pinMISO);
 
 			// 5: habilitación de clock
 			SYSCON->FCLKSEL[ 10 ] = 1;
@@ -145,27 +138,29 @@ SPI::SPI( 	bool portMOSI , uint8_t pinMOSI ,
 	m_spi->CFG |= 	( 1 << 0 );			// habilitamos SPI
 }
 
-SPI::~SPI() {
+Spi::~Spi() {
 	Tx_DisableInterupt();
 	delete[] spi_packets;
 	spi_packets = nullptr;
 }
 
-void SPI::push_packet ( SPI_packet packet )
+void Spi::push_packet ( SPI_packet packet )
 {
 	spi_packets[ m_inx_packetIn ] = packet;
 	m_inx_packetIn ++;
 	m_inx_packetIn %= m_max_packets;
 }
 
-uint8_t SPI::pop_packet (SPI_packet * packet )
+uint8_t Spi::pop_packet (SPI_packet * packet )
 {
 	if ( m_inx_packetIn != m_inx_packetOut )
 	{
-		if(packet->TX_data != nullptr)
-		{
-			delete[] packet->TX_data;
+		/*
+		if(packet->TX_data != nullptr)	//	Eliminado por Mati3 (31/07/26)
+		{								//	Provocaba intento de eliminacion de
+			delete[] packet->TX_data;	//	Memoria inválida, lo dejo comentado por las dudas
 		}
+		*/
 		*packet = spi_packets[ m_inx_packetOut ] ;
 		m_inx_packetOut ++;
 		m_inx_packetOut %= m_max_packets;
@@ -176,7 +171,7 @@ uint8_t SPI::pop_packet (SPI_packet * packet )
 	return 0;
 }
 
-void SPI::SPI_IRQHandler ( void )
+void Spi::SPI_IRQHandler ( void )
 {
 	uint8_t dato = 0;
 	uint32_t stat = m_spi->STAT;
@@ -225,6 +220,10 @@ void SPI::SPI_IRQHandler ( void )
 		if (current_packet.done_flag != nullptr)
 		{
 			*(current_packet.done_flag) = true;
+			if(current_packet.TX_data != nullptr){	//	Agregado por Mati3 (31/07/26)
+				delete[] current_packet.TX_data;	//	Solucion de bug hardFault
+				current_packet.TX_data = nullptr;	//	Elimina paquete obsoleto
+			}
 		}
 
 		if(pop_packet(&current_packet) == 1)
@@ -240,17 +239,17 @@ void SPI::SPI_IRQHandler ( void )
 
 }
 
-void SPI::Tx_EnableInterupt (  void )
+void Spi::Tx_EnableInterupt (  void )
 {
 	m_spi->INTENSET = (1 << 1);
 }
 
-void SPI::Tx_DisableInterupt (  void )
+void Spi::Tx_DisableInterupt (  void )
 {
 	m_spi->INTENCLR = (1 << 1);
 }
 
-void SPI::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t slave_n ,  volatile bool* done)
+void Spi::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t slave_n ,  volatile bool* done)
 {
 	SPI_packet new_packet;
 
@@ -282,17 +281,18 @@ void SPI::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t s
 
 	if ( m_flagTx == false )
 	{
-		m_flagTx = true ;
-		Tx_EnableInterupt (  );
+		if(pop_packet(&current_packet) == 1){	//	Agregado por Mati3 (31/07/26) por bug HardFault al iniciar transmit
+			m_flagTx = true ;					//	Estas 2 lineas ya estaban
+			Tx_EnableInterupt (  );				//	Pero sin el if(pop_packet)
+		}
 	}
-
 }
 
-						//{PA_SPI0_SSEL0, PA_SPI0_SSEL1, PA_SPI0_SSEL2, PA_SPI0_SSEL3} , {PA_SPI1_SSEL0, PA_SPI1_SSEL1, PA_SPI1_SSEL1, PA_SPI1_SSEL1}
-#define SLAVE_SWM_ARRAY {{18, 19, 20, 21}, {25, 26, 26, 26}} // repito el 1 1 por si llega a caer en ese caso, que la switch matrix no cambie algo importante
+
+#define SLAVE_SWM_ARRAY {{PA_SPI0_SSEL0, PA_SPI0_SSEL1, PA_SPI0_SSEL2, PA_SPI0_SSEL3}, {PA_SPI1_SSEL0, PA_SPI1_SSEL1, PA_SPI1_SSEL1, PA_SPI1_SSEL1}} // repito el 1 1 por si llega a caer en ese caso, que la switch matrix no cambie algo importante
 
 
-int8_t SPI::AddSlave(	bool portSS , uint8_t pinSS , SPI_SLAVE_SELECT_POLARITY_t polarity )
+int8_t Spi::AddSlave(	bool portSS , uint8_t pinSS , SPI_SLAVE_SELECT_POLARITY_t polarity )
 {
 	if(m_slave_count < SLAVE_MAX_QUANTITY(m_spi_n))
 	{
@@ -304,9 +304,7 @@ int8_t SPI::AddSlave(	bool portSS , uint8_t pinSS , SPI_SLAVE_SELECT_POLARITY_t 
 		}
 
 		SYSCON->SYSAHBCLKCTRL0 |= (1 << 7); // Habilito la switch matrix. 7 = SWM
-		if(portSS == 1) pinSS = pinSS + 32;
-		SWM->PINASSIGN[ g_slave_swm_array[m_spi_n][m_slave_count] / 4 ] &= ~(0xff << ((g_slave_swm_array[m_spi_n][m_slave_count] % 4) * 8));	//			PINASSIGN_Config(g_slave_swm_array[m_spi_n][m_slave_count],  portSS,  pinSS);
-		SWM->PINASSIGN[ g_slave_swm_array[m_spi_n][m_slave_count] / 4 ] |= pinSS << ((g_slave_swm_array[m_spi_n][m_slave_count] % 4) * 8);
+		PINASSIGN_Config(g_slave_swm_array[m_spi_n][m_slave_count],  portSS,  pinSS);
 		SYSCON->SYSAHBCLKCTRL0 &= ~(1 << 7); // desabilito la switch matrix. 7 = SWM
 
 		m_slave_count++;
@@ -329,18 +327,17 @@ void SPI1_IRQHandler ( void )
 }
 
 
-
 // ############################
 // #                          #
-// #    Part 2:  SPI slave    #
+// #    Parte 2: SPI slave    #
 // #                          #
 // ############################
 
 
 
 SpiSlave::SpiSlave(	bool portSS , uint8_t pinSS ,
-					SPI &SPI_obj,
-					SPI::SPI_SLAVE_SELECT_POLARITY_t polarity
+					Spi &SPI_obj,
+					Spi::SPI_SLAVE_SELECT_POLARITY_t polarity
 				) :  m_portSS(portSS),   m_pinSS(pinSS),   m_SPI_obj(SPI_obj),   m_polarity(polarity)
 {
 
@@ -363,4 +360,3 @@ void SpiSlave::Transmit( void * write_buff ,void * read_buff , uint32_t n , vola
 {
 	m_spi_ref->Transmit(write_buff, read_buff, n, m_slave_number, done);
 }
-
