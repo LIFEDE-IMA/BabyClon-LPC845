@@ -21,7 +21,7 @@ class Eth : public SpiSlave{
 			COMMON_REGISTER_BLOCK = 0x00,	//	W5500 Common Register Block
 			SOCKET0_REGISTER_BLOCK = 0x01,	//	W5500 Socket 0 Register Block
 			SOCKET0_TX_BUFFER_BLOCK	= 0x02,	//	W5500 Socket 0 Tx Buffer Block
-			SOKCET0_RX_BUFFER_BLOCK	= 0x03	//	W5500 Socket 0 Rx Buffer Block
+			SOCKET0_RX_BUFFER_BLOCK	= 0x03	//	W5500 Socket 0 Rx Buffer Block
 		};
 
 		enum registerAddr_t : uint16_t{
@@ -72,7 +72,32 @@ class Eth : public SpiSlave{
 			Sn_DPORT0_REGISTER = 0x0010,	//	W5500 Socket n Destination Port 0 (Socket Register Block)
 			Sn_DPORT1_REGISTER = 0x0011,	//	W5500 Socket n Destination Port 1 (Socket Register Block)
 
+			Sn_TX_FSR0_REGISTER = 0x0020,	//	W5500 Socket n Tx Free Size 0 Register (Socket Register Block)
+			Sn_TX_FSR1_REGISTER = 0x0021,	//	W5500 Socket n Tx Free Size 1 Register (Socket Register Block)
+
+			Sn_TX_RD0_REGISTER = 0x0022,	//	W5500 Socket n Tx Read Pointer 0 Register (Socket Register Block)
+			Sn_TX_RD1_REGISTER = 0x0023,	//	W5500 Socket n Tx Read Pointer 1 Register (Socket Register Block)
+
+			Sn_TX_WR0_REGISTER = 0x0024,	//	W5500 Socket n Tx Write Pointer 0 Register (Socket Register Block)
+			Sn_TX_WR1_REGISTER = 0x0025,	//	W5500 Socket n Tx Write Pointer 1 Register (Socket Register Block)
+
+			Sn_RX_RSR0_REGISTER = 0x0026,	//	W5500 Socket n Rx Received Size 0 Register (Socket Register Block)
+			Sn_RX_RSR1_REGISTER = 0x0027,	//	W5500 Socket n Rx Received Size 1 Register (Socket Register Block)
+
+			Sn_RX_RD0_REGISTER = 0x0028,	//	W5500 Socket n Rx Read Pointer 0 Register (Socket Register Block)
+			Sn_RX_RD1_REGISTER = 0x0029,	//	W5500 Socket n Rx Read Pointer 1 Register (Socket Register Block)
+
+			PHYCFGR_REGISTER = 0x002E,	//	W5500 PHY Configuration Register (Common Register Block)
+
 			VERSIONR_REGISTER = 0x0039	//	W5500 Chip Version Register (Common Register Block)
+		};
+
+		enum configState_t{
+			CONFIG_NONE,
+			CONFIG_IP,
+			CONFIG_GATEWAY,
+			CONFIG_SUBNET,
+			CONFIG_MAC
 		};
 
 		enum opMode_t : uint8_t{
@@ -92,6 +117,11 @@ class Eth : public SpiSlave{
 			UDP_MODE = 0x02
 		};
 
+		enum socketCloseMode_t{
+			MANUAL_CLOSE,	//	User closes socket when wanted
+			AUTO_CLOSE		//	Server closes socket when wanted
+		};
+
 		enum socketCmd_t : uint8_t{
 			OPEN_SOCKET = 0x01,
 			LISTEN_SOCKET = 0x02,
@@ -102,23 +132,90 @@ class Eth : public SpiSlave{
 			RECV_SOCKET = 0x40
 		};
 
+		enum socketInterruptStat_t : uint8_t{
+			CON_INT = (1 << 0),
+			DISCON_INT = (1 << 1),
+			RECV_INT = (1 << 2),
+			TIMEOUT_INT = (1 << 3),
+			SEND_OK_INT = (1 << 4)
+		};
+
 		enum socketStat_t : uint8_t{
 			SOCK_CLOSED = 0x00,
 			SOCK_INIT = 0x13,
 			SOCK_LISTEN = 0x14,
+			SOCK_SYNSENT = 0x15,
 			SOCK_ESTABLISHED = 0x17,
 			SOCK_CLOSE_WAIT = 0x1C
 		};
 
 		enum ethState_t{
 			ETH_IDLE,
-			ETH_SOCKET_WRITE_MODE,
-			ETH_SOCKET_WAIT_WRITE_MODE,
-			ETH_SOCKET_WRITE_PORT,
-			ETH_SOCKET_WAIT_WRITE_PORT,
-			ETH_SOCKET_WRITE_COMMAND,
-			ETH_SOCKET_WAIT_WRITE_COMMAND,
-			ETH_SOCKET_FINISHED
+			//	CONFIG W550
+			ETH_CONFIG_WRITE,
+			ETH_CONFIG_WAIT_WRITE,
+			ETH_CONFIG_NEXT,
+			ETH_CONFIG_FINISHED,
+			//	READ SOCKET STATUS
+			ETH_SOCKET_STATUS_READ,
+			ETH_SOCKET_STATUS_WAIT_READ,
+			ETH_SOCKET_STATUS_CHECK,
+			//	OPEN SOCKET
+			ETH_SOCKET_OPEN_WRITE_MODE,
+			ETH_SOCKET_OPEN_WAIT_WRITE_MODE,
+			ETH_SOCKET_OPEN_WRITE_PORT,
+			ETH_SOCKET_OPEN_WAIT_WRITE_PORT,
+			ETH_SOCKET_OPEN_WRITE_COMMAND,
+			ETH_SOCKET_OPEN_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_OPEN_CHECK_STATUS,
+			ETH_SOCKET_OPEN_FINISHED,
+			//	CONNECT SOCKET
+			ETH_SOCKET_CONNECT_WRITE_IP,
+			ETH_SOCKET_CONNECT_WAIT_WRITE_IP,
+			ETH_SOCKET_CONNECT_WRITE_PORT,
+			ETH_SOCKET_CONNECT_WAIT_WRITE_PORT,
+			ETH_SOCKET_CONNECT_WRITE_COMMAND,
+			ETH_SOCKET_CONNECT_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_CONNECT_CHECK_STATUS,
+			ETH_SOCKET_CONNECT_FINISHED,
+			//	SEND SOCKET
+			ETH_SOCKET_SEND_READ_TX_WR,
+			ETH_SOCKET_SEND_WAIT_READ_TX_WR,
+			ETH_SOCKET_SEND_WRITE_BUFFER,
+			ETH_SOCKET_SEND_WAIT_WRITE_BUFFER,
+			ETH_SOCKET_SEND_WRITE_TX_WR,
+			ETH_SOCKET_SEND_WAIT_WRITE_TX_WR,
+			ETH_SOCKET_SEND_WRITE_COMMAND,
+			ETH_SOCKET_SEND_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_SEND_READ_INTERRUPT_STAT,
+			ETH_SOCKET_SEND_WAIT_READ_INTERRUPT_STAT,
+			ETH_SOCKET_SEND_CLEAR_INTERRUPT,
+			ETH_SOCKET_SEND_WAIT_CLEAR_INTERRUPT,
+			ETH_SOCKET_SEND_FINISHED,
+			//	RECEIVE SOCKET
+			ETH_SOCKET_RCV_READ_RX_RSR,
+			ETH_SOCKET_RCV_WAIT_READ_RX_RSR,
+			ETH_SOCKET_RCV_READ_RX_RD,
+			ETH_SOCKET_RCV_WAIT_READ_RX_RD,
+			ETH_SOCKET_RCV_READ_BUFFER,
+			ETH_SOCKET_RCV_WAIT_READ_BUFFER,
+			ETH_SOCKET_RCV_WRITE_RX_RD,
+			ETH_SOCKET_RCV_WAIT_WRITE_RX_RD,
+			ETH_SOCKET_RCV_WRITE_COMMAND,
+			ETH_SOCKET_RCV_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_RCV_CLEAR_INTERRUPT,
+			ETH_SOCKET_RCV_WAIT_CLEAR_INTERRUPT,
+			ETH_SOCKET_RCV_FINISHED,
+			//	DISCONNECT SOCKET
+			ETH_SOCKET_DISCONNECT_WRITE_COMMAND,
+			ETH_SOCKET_DISCONNECT_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_DISCONNECT_CHECK_STATUS,
+			ETH_SOCKET_DISCONNECT_FINISHED,
+			//	CLOSE SOCKET
+			ETH_SOCKET_CLOSE_WRITE_COMMAND,
+			ETH_SOCKET_CLOSE_WAIT_WRITE_COMMAND,
+			ETH_SOCKET_CLOSE_CHECK_STATUS,
+			ETH_SOCKET_CLOSE_FINISHED
 		};
 
 	private:
@@ -131,24 +228,57 @@ class Eth : public SpiSlave{
 		volatile bool *m_doneFlag;
 		bool m_pendingReadFlag;
 
-		//	SOCKETS
+		uint8_t m_ip[4];
+		uint8_t m_gateway[4];
+		uint8_t m_subnet[4];
+		uint8_t m_mac[6];
+
+		opMode_t m_opMode;
+		configState_t m_currentConfigStat;
+		bool m_initFinishedFlag;
+
+		//	---------------	SOCKETS	---------------
 		ethState_t m_ethState;
-		uint8_t m_socketPortBuffer[2];
+
+		socketStat_t m_socketStat;
+		uint8_t m_socketStatusByte;
+		ethState_t m_nextStateAfterStatusRead;
+
+		uint8_t m_localPortBuffer[2];
+		uint8_t m_remotePortBuffer[2];
+		uint8_t m_remoteIPBuffer[4];
+
+		uint8_t *m_sendBuffer;
+		uint16_t m_sendLen;
+		uint8_t m_txWritePointer[2];		//	Read in Sn_TX_WR
+		uint16_t m_nextTxWritePointer;		//	Updated with m_sendLen
+		bool m_sendFinishedFlag;
+
+		uint8_t *m_rcvBuffer;
+		uint16_t m_actualRcvLen;			//	Size Received from Server
+		uint16_t m_usrAskedRcvLen;			//	Size User wants to receive
+		uint8_t m_rxReadPointer[2];			//	Read in Sn_RX_RD
+		uint16_t m_nextRxReadPointer;		//	Updated with m_rcvLen
+		uint8_t m_rxReceivedSize[2];		//	Read in Sn_RX_RSR
+		bool m_rcvFinishedFlag;
+
+		socketCloseMode_t m_socketCloseMode;
+
+		uint8_t m_socketInterruptStat;
+
 		volatile bool m_socketTransferDone;
+		//	---------------------------------------------
 
-		void transfer(registerAddr_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);		//	Makes a transfer (r/w) with W5500
+		void transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);		//	Makes a transfer (r/w) with W5500
 
-		void readByte(registerAddr_t addr, block_t block, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Reads ONE BYTE from W5500 register
-		uint8_t readByteAndWait(registerAddr_t addr, block_t block, opMode_t opMode = opMode_t::VAR_DATA_LEN);								//	Blocking version for debug
-		void writeByte(registerAddr_t addr, block_t block, uint8_t data, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes ONE BYTE into W5500 register
+		void readByte(uint16_t addr, block_t block, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Reads ONE BYTE from W5500 register
+		uint8_t readByteAndWait(uint16_t addr, block_t block, opMode_t opMode = opMode_t::VAR_DATA_LEN);								//	Blocking version for debug
+		void writeByte(uint16_t addr, block_t block, uint8_t data, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes ONE BYTE into W5500 register
 
-	public:
-		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
-
-		void readBuffer(registerAddr_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Reads [len] bytes from W5500 register and saves them in user [buffer]
-		void readBufferAndWait(registerAddr_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
-		void writeBuffer(registerAddr_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes [len] bytes into W5500 register from user [buffer]
-		void writeBufferAndWait(registerAddr_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
+		void readBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Reads [len] bytes from W5500 register and saves them in user [buffer]
+		void readBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
+		void writeBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes [len] bytes into W5500 register from user [buffer]
+		void writeBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
 
 		void setIP(uint8_t ip[4], volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);				//	Sets SIPRn Registers in W5500
 		void setIPAndWait(uint8_t ip[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);								//	Blocking version for debug
@@ -166,15 +296,35 @@ class Eth : public SpiSlave{
 		void setMACAndWait(uint8_t mac[6], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Blocking version for debug
 		void readMAC(uint8_t mac[6], opMode_t opMode = opMode_t::VAR_DATA_LEN);									//	Reads SHARn Registers in W5500
 
-		void init();	//	Initializes W5500 Module
+		bool isBusy() const;		//	Returns True if Eth is busy
 
-		void socketOpenTCP(uint16_t port);					//	Opens Socket, TCP Socket Mode
-		void socketClose();									//	Closes Socket
-		socketStat_t socketStatus();						//	Returns Socket Status
-		void socketConnect(uint8_t ip[4], uint16_t port);	//	Connects Socket
-		bool socketConnected();								//	Returns True if Socket is Connected
+	public:
 
-		void handler();		//	Non-blocking W5500 handler
+		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
+
+		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketCloseMode_t closeMode = socketCloseMode_t::AUTO_CLOSE ,opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module
+
+		bool isLinkUp();						//	Returns True if Link is Up (Electrical Connection between W5500 and Router)
+		socketStat_t socketStatus() const;		//	Returns Socket Status
+		bool isReady() const;					//	Return true if eth can make an operation
+
+		void socketOpenTCP(uint16_t localPort);							//	Opens Socket, TCP Socket Mode
+		bool socketOpened() const;										//	Returns True if Socket is Opened
+		void socketConnect(uint8_t remoteIP[4], uint16_t remotePort);	//	Connects Socket
+		bool socketConnected() const;									//	Returns True if Socket is Connected
+		void socketSend(uint8_t *buffer, uint16_t len);					//	Sends Data to Server
+		bool socketSendFinished() const;								//	Returns True if Data was sent to Server
+		void socketReceive(uint8_t *buffer, uint16_t maxLen);			//	Receives Data from Server
+		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
+		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server
+		void socketDisconnect();										//	Disconnects Socket
+		bool socketDisconnectFinished() const;							//	Returns True if Socket was Disconnected
+		void socketClose();												//	Closes Socket
+		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
+
+		void handler();			//	Non-blocking W5500 handler
+
+		void handlerViejo();	//	For debug
 
 		~Eth();		//	Destructor
 };
