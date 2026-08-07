@@ -14,7 +14,7 @@
 #include "spi.h"
 #include "systimer.h"
 
-#define MAX_SPI_TRANSFER_LEN	32
+#define MAX_SPI_TRANSFER_LEN	128
 
 class Eth : public SpiSlave{
 	public:

@@ -24,13 +24,14 @@ int main(void) {
 	Spi spiMaster(0, 23, 0, 26, 0, 21, Spi::SPI_NUMBER_0, 1000000);
 	Eth eth(0, 22, spiMaster);
 
-	uint8_t ip[4] = {192, 168, 0, 50};
-	uint8_t gateway[4] = {192, 168, 0, 1};
+	uint8_t ip[4] = {10, 0, 28, 50};
+	uint8_t gateway[4] = {10, 0, 28, 1};
 	uint8_t subnet[4] = {255, 255, 255, 0};
 	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x33};
 
 	uint8_t txMsg[] = "Hola desde LPC845";
-	uint8_t rxMsg[20];
+	uint8_t txMsg2[] = "Hola desde LPC845, son 49 bytes por transferencia";
+	uint8_t rxMsg[120];
 
 	bool f_openStarted = false;
 	bool f_connectStarted = false;
@@ -58,7 +59,7 @@ int main(void) {
     	}
 
     	if(eth.socketOpened() && !f_connectStarted){
-    		uint8_t serverIP[4] = {192, 168, 0, 7};
+    		uint8_t serverIP[4] = {10, 0, 28, 69};
 
     		eth.socketConnect(serverIP, 5000);
 
@@ -67,7 +68,7 @@ int main(void) {
 
     	if(eth.socketConnected()){
     		if(!f_sendStarted){
-    			eth.socketSend(txMsg, (sizeof(txMsg) - 1));
+    			eth.socketSend(txMsg2, (sizeof(txMsg2) - 1));
     			f_sendStarted = true;
     		}
         	if(eth.socketSendFinished() && !f_receiveStarted){
@@ -77,7 +78,7 @@ int main(void) {
         	if(eth.socketReceiveFinished() && eth.socketSendFinished()){
         		f_sendStarted = false;
         		f_receiveStarted = false;
-        		static uint8_t i = 0;
+        		static uint16_t i = 0;
         		i++;
         		if(i >= 10){
         			i = 0;

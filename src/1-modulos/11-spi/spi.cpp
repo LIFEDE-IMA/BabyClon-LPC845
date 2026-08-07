@@ -174,7 +174,7 @@ uint8_t Spi::pop_packet (SPI_packet * packet )
 		spi_packets[m_inx_packetOut].TX_data = nullptr;		//	Agregado por Mati3 (04/08/26)
 		spi_packets[m_inx_packetOut].RX_data = nullptr;		//	Limpieza de punteros
 		spi_packets[m_inx_packetOut].done_flag = nullptr;	//	No era un bug pero ayuda a
-		spi_packets[m_inx_packetOut].n_bytes = 0;		//	Encontrar los dueños de ciertos punteros
+		spi_packets[m_inx_packetOut].n_bytes = 0;			//	Encontrar los dueños de ciertos punteros
 
 		m_inx_packetOut ++;
 		m_inx_packetOut %= m_max_packets;
@@ -234,11 +234,12 @@ void Spi::SPI_IRQHandler ( void )
 		if (current_packet.done_flag != nullptr)
 		{
 			*(current_packet.done_flag) = true;
-			if(current_packet.TX_data != nullptr){	//	Agregado por Mati3 (31/07/26)
-				delete[] current_packet.TX_data;	//	Solucion de bug hardFault
-				current_packet.TX_data = nullptr;	//	Elimina paquete obsoleto
-			}
 		}
+		if(current_packet.TX_data != nullptr){	//	Agregado por Mati3 (31/07/26)
+			delete[] current_packet.TX_data;	//	Solucion de bug hardFault
+			current_packet.TX_data = nullptr;	//	Elimina paquete obsoleto
+		}
+
 
 		if(pop_packet(&current_packet) == 1)
 		{
