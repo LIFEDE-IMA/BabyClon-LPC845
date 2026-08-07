@@ -34,14 +34,18 @@ class SysTimer : public TimedPeripheral{
 		timeBase_t m_base;
 		void (*m_handler)(void);
 
+		volatile bool m_timerExpiredFlag;
+
 		void baseToTicks(uint32_t time);	//	Sets 'time' as SysTick_Handler counter (when its called 'time' times, m_handler() is called)
 
 	public:
-		SysTimer(uint32_t time, void (*handler)(void), shotType_t shot, timeBase_t base = timeBase_t::T_SEG);		//	Constructor
+		SysTimer(uint32_t time, shotType_t shot = shotType_t::SINGLE, timeBase_t base = timeBase_t::T_SEG, void (*handler)(void) = nullptr);		//	Constructor
 
 		void startTimer();					//	Enables SysTick_Handler app
 		void stopTimer();					//	SysTick_Handler is left with no effect
 		void setTimer(uint32_t time);		//	Sets [m_reload]
+		bool singleTimerExpired();			//	Returns [m_timerExpiredFlag], ONLY for SINGLE TIMER shotType_t
+		bool isRunning() const;				//	Returns True if Timer was Started
 
 		SysTimer& operator=(const uint32_t time);		//	Operator '=' overload
 		SysTimer& operator+=(const uint32_t time);		//	Operator '+=' overload

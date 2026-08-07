@@ -12,6 +12,7 @@
 #define ETH_H_
 
 #include "spi.h"
+#include "systimer.h"
 
 #define MAX_SPI_TRANSFER_LEN	32
 
@@ -72,6 +73,9 @@ class Eth : public SpiSlave{
 			Sn_DPORT0_REGISTER = 0x0010,	//	W5500 Socket n Destination Port 0 (Socket Register Block)
 			Sn_DPORT1_REGISTER = 0x0011,	//	W5500 Socket n Destination Port 1 (Socket Register Block)
 
+			Sn_RXBUF_SIZE_REGISTER = 0x001E,			//	W5500 Socket n Receive BufferSize (Socket Register Block)
+			Sn_TXBUF_SIZE_REGISTER = 0x001F,			//	W5500 Socket n Transmit BufferSize (Socket Register Block)
+
 			Sn_TX_FSR0_REGISTER = 0x0020,	//	W5500 Socket n Tx Free Size 0 Register (Socket Register Block)
 			Sn_TX_FSR1_REGISTER = 0x0021,	//	W5500 Socket n Tx Free Size 1 Register (Socket Register Block)
 
@@ -97,7 +101,9 @@ class Eth : public SpiSlave{
 			CONFIG_IP,
 			CONFIG_GATEWAY,
 			CONFIG_SUBNET,
-			CONFIG_MAC
+			CONFIG_MAC,
+			CONFIG_RX_BUFFER_SIZE,
+			CONFIG_TX_BUFFER_SIZE,
 		};
 
 		enum opMode_t : uint8_t{
@@ -149,6 +155,15 @@ class Eth : public SpiSlave{
 			SOCK_CLOSE_WAIT = 0x1C
 		};
 
+
+		enum socketBufferSize_t : uint8_t{
+			SOCKBUF_1KB = 0x01,
+			SOCKBUF_2KB = 0x02,
+			SOCKBUF_4KB = 0x04,
+			SOCKBUF_8KB = 0x08,
+			SOCKBUF_16KB = 0x10
+		};
+
 		enum ethState_t{
 			ETH_IDLE,
 			//	CONFIG W550
@@ -179,6 +194,8 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_CONNECT_CHECK_STATUS,
 			ETH_SOCKET_CONNECT_FINISHED,
 			//	SEND SOCKET
+			ETH_SOCKET_SEND_READ_TX_FSR,
+			ETH_SOCKET_SEND_WAIT_TX_FSR,
 			ETH_SOCKET_SEND_READ_TX_WR,
 			ETH_SOCKET_SEND_WAIT_READ_TX_WR,
 			ETH_SOCKET_SEND_WRITE_BUFFER,
@@ -218,6 +235,11 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_CLOSE_FINISHED
 		};
 
+		enum ethErrorState_t{
+			ERROR_NONE,
+			ERROR_TIMEOUT
+		};
+
 	private:
 		uint8_t m_txBuffer[MAX_SPI_TRANSFER_LEN + 3];
 		uint8_t m_rxBuffer[MAX_SPI_TRANSFER_LEN + 3];
@@ -239,6 +261,19 @@ class Eth : public SpiSlave{
 
 		//	---------------	SOCKETS	---------------
 		ethState_t m_ethState;
+		ethErrorState_t m_ethError;
+
+		SysTimer m_timeoutTimer;	//	To avoid blocking states
+		bool m_timeoutFlag;
+
+		uint16_t m_txBufferSize;
+		uint16_t m_txBufferMask;
+		uint16_t m_rxBufferSize;
+		uint16_t m_rxBufferMask;
+		bool m_pendingReadWrap;
+		uint16_t m_firstReadLen;
+		uint16_t m_secondReadLen;
+		uint8_t *m_userReadBuffer;
 
 		socketStat_t m_socketStat;
 		uint8_t m_socketStatusByte;
@@ -250,6 +285,7 @@ class Eth : public SpiSlave{
 
 		uint8_t *m_sendBuffer;
 		uint16_t m_sendLen;
+		uint8_t m_txFreeSize[2];			//	Read in Sn_TX_FSR
 		uint8_t m_txWritePointer[2];		//	Read in Sn_TX_WR
 		uint16_t m_nextTxWritePointer;		//	Updated with m_sendLen
 		bool m_sendFinishedFlag;
@@ -298,11 +334,15 @@ class Eth : public SpiSlave{
 
 		bool isBusy() const;		//	Returns True if Eth is busy
 
+		void socketRequestStatus(ethState_t nextStateAfterStatusRead);	//	Sets next state after status read
+
+		void timeoutError();	//	Handles ERROR_TIMEOUT
+
 	public:
 
 		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
 
-		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketCloseMode_t closeMode = socketCloseMode_t::AUTO_CLOSE ,opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module
+		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketBufferSize_t rxBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketBufferSize_t txBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketCloseMode_t closeMode = socketCloseMode_t::AUTO_CLOSE ,opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module
 
 		bool isLinkUp();						//	Returns True if Link is Up (Electrical Connection between W5500 and Router)
 		socketStat_t socketStatus() const;		//	Returns Socket Status
@@ -323,8 +363,6 @@ class Eth : public SpiSlave{
 		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
 
 		void handler();			//	Non-blocking W5500 handler
-
-		void handlerViejo();	//	For debug
 
 		~Eth();		//	Destructor
 };

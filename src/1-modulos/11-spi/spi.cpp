@@ -140,6 +140,14 @@ Spi::Spi( 		bool portMOSI , uint8_t pinMOSI ,
 
 Spi::~Spi() {
 	Tx_DisableInterupt();
+
+	for(uint32_t i = 0; i < m_max_packets; i++){
+		if(spi_packets[i].TX_data != nullptr){	//	Agregado por Mati3 (04/08/26)
+			delete[] spi_packets[i].TX_data;	//	Solo para no tener pérdidas de memoria
+			spi_packets[i].TX_data = nullptr;	//	Al destruir SPI con paquetes pendientes
+		}
+	}
+
 	delete[] spi_packets;
 	spi_packets = nullptr;
 }
@@ -162,6 +170,12 @@ uint8_t Spi::pop_packet (SPI_packet * packet )
 		}
 		*/
 		*packet = spi_packets[ m_inx_packetOut ] ;
+
+		spi_packets[m_inx_packetOut].TX_data = nullptr;		//	Agregado por Mati3 (04/08/26)
+		spi_packets[m_inx_packetOut].RX_data = nullptr;		//	Limpieza de punteros
+		spi_packets[m_inx_packetOut].done_flag = nullptr;	//	No era un bug pero ayuda a
+		spi_packets[m_inx_packetOut].n_bytes = 0;		//	Encontrar los dueños de ciertos punteros
+
 		m_inx_packetOut ++;
 		m_inx_packetOut %= m_max_packets;
 		index_TX = 0;
@@ -256,7 +270,7 @@ void Spi::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t s
 	if(write_buff != nullptr)
 	{
 		uint8_t* new_write_buff = (new uint8_t[n]);
-		for (uint8_t i = 0; i < n; i++)
+		for (uint32_t i = 0; i < n; i++)
 		{
 			new_write_buff [i] = ((uint8_t*)write_buff)[i];
 		}

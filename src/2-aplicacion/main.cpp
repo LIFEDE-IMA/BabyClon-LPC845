@@ -41,11 +41,11 @@ int main(void) {
 
     for(volatile int i = 0; i < 500000; i++);
 
-    eth.init(ip, gateway, subnet, mac, Eth::MANUAL_CLOSE);
+    eth.init(ip, gateway, subnet, mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB,Eth::MANUAL_CLOSE);
 
 
     while(1){
-    	eth.handlerViejo();
+    	eth.handler();
 
     	if(!f_initialCloseStarted && !eth.socketCloseFinished()){
     		eth.socketClose();
