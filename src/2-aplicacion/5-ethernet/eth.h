@@ -237,18 +237,54 @@ class Eth : public SpiSlave{
 
 		enum ethErrorState_t{
 			ERROR_NONE,
-			ERROR_TIMEOUT
+			ERROR_TIMEOUT,
+			ERROR_SOCK_CLOSED
 		};
 
 	private:
+		enum transferContext_t : uint8_t{
+			NONE,
+			GENERIC,
+			READ_BUFFER,
+			WRITE_BUFFER
+		};
+
 		uint8_t m_txBuffer[MAX_SPI_TRANSFER_LEN + 3];
 		uint8_t m_rxBuffer[MAX_SPI_TRANSFER_LEN + 3];
 
-		uint8_t *m_readBuffer;
-		uint16_t m_readLen;
+		//	---------------	TRANSFER ---------------
 
-		volatile bool *m_doneFlag;
-		bool m_pendingReadFlag;
+		transferContext_t m_transferContext;
+
+		uint16_t m_transferAddr;
+		uint16_t m_transferRemainingLen;
+		uint16_t m_transferProcessedLen;
+
+		uint8_t *m_transferData;
+		uint8_t m_transferByte;
+
+		block_t m_transferBlock;
+		rwMode_t m_transferRWMode;
+		opMode_t m_transferOpMode;
+
+		volatile bool m_transferBlockDoneFlag;
+		bool m_transferInProgressFlag;
+
+		volatile bool *m_usrDoneFlag;
+
+		//	---------------	READ / WRITE BUFFER	---------------
+
+		uint8_t *m_usrBufferData;
+		uint16_t m_usrBufferRemainingLen;
+
+		bool m_w5500WrapAroundFlag;
+
+		uint16_t m_w5500BufferSize;
+		uint16_t m_w5500BufferMask;
+		uint16_t m_w5500BufferCurrentAddr;
+		uint16_t m_w5500BufferCurrentLen;
+
+		//	---------------	INIT CONFIG	---------------
 
 		uint8_t m_ip[4];
 		uint8_t m_gateway[4];
@@ -270,10 +306,6 @@ class Eth : public SpiSlave{
 		uint16_t m_txBufferMask;
 		uint16_t m_rxBufferSize;
 		uint16_t m_rxBufferMask;
-		bool m_pendingReadWrap;
-		uint16_t m_firstReadLen;
-		uint16_t m_secondReadLen;
-		uint8_t *m_userReadBuffer;
 
 		socketStat_t m_socketStat;
 		uint8_t m_socketStatusByte;
@@ -285,6 +317,9 @@ class Eth : public SpiSlave{
 
 		uint8_t *m_sendBuffer;
 		uint16_t m_sendLen;
+		uint16_t m_sendProcessedLen;
+		uint16_t m_sendRemainingLen;
+		uint16_t m_sendCurrentLen;
 		uint8_t m_txFreeSize[2];			//	Read in Sn_TX_FSR
 		uint8_t m_txWritePointer[2];		//	Read in Sn_TX_WR
 		uint16_t m_nextTxWritePointer;		//	Updated with m_sendLen
@@ -305,32 +340,34 @@ class Eth : public SpiSlave{
 		volatile bool m_socketTransferDone;
 		//	---------------------------------------------
 
-		void transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);		//	Makes a transfer (r/w) with W5500
+		void transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Makes ONE transfer of [ MAX_SPI_TRANSFER_LEN ] bytes
+		void transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);			//	Makes a transfer of X needed BLOCKS ( X * MAX_SPI_TRANSFER_LEN bytes) (r/w) with W5500
+		void startNextBufferTransfer();	//	Sets next transfer() depending on whether or not theres a wrap-around
 
 		void readByte(uint16_t addr, block_t block, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Reads ONE BYTE from W5500 register
 		uint8_t readByteAndWait(uint16_t addr, block_t block, opMode_t opMode = opMode_t::VAR_DATA_LEN);								//	Blocking version for debug
 		void writeByte(uint16_t addr, block_t block, uint8_t data, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes ONE BYTE into W5500 register
 
 		void readBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Reads [len] bytes from W5500 register and saves them in user [buffer]
-		void readBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
+		bool readBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
 		void writeBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Writes [len] bytes into W5500 register from user [buffer]
 		void writeBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
 
 		void setIP(uint8_t ip[4], volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);				//	Sets SIPRn Registers in W5500
 		void setIPAndWait(uint8_t ip[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);								//	Blocking version for debug
-		void readIP(uint8_t ip[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);									//	Reads SIPRn Registers in W5500
+		bool readIP(uint8_t ip[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);									//	Reads SIPRn Registers in W5500
 
 		void setGateway(uint8_t gateway[4], volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Sets GARn Registers in W5500
 		void setGatewayAndWait(uint8_t gateway[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);					//	Blocking version for debug
-		void readGateway(uint8_t gateway[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Reads GARn Registers in W5500
+		bool readGateway(uint8_t gateway[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Reads GARn Registers in W5500
 
 		void setSubnet(uint8_t subnet[4], volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);		//	Sets SUBRn Registers in W5500
 		void setSubnetAndWait(uint8_t subnet[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);						//	Blocking version for debug
-		void readSubnet(uint8_t subnet[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Reads SUBRn Registers in W5500
+		bool readSubnet(uint8_t subnet[4], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Reads SUBRn Registers in W5500
 
 		void setMAC(uint8_t mac[6], volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);			//	Sets SHARn Registers in W5500
 		void setMACAndWait(uint8_t mac[6], opMode_t opMode = opMode_t::VAR_DATA_LEN);							//	Blocking version for debug
-		void readMAC(uint8_t mac[6], opMode_t opMode = opMode_t::VAR_DATA_LEN);									//	Reads SHARn Registers in W5500
+		bool readMAC(uint8_t mac[6], opMode_t opMode = opMode_t::VAR_DATA_LEN);									//	Reads SHARn Registers in W5500
 
 		bool isBusy() const;		//	Returns True if Eth is busy
 
@@ -339,7 +376,6 @@ class Eth : public SpiSlave{
 		void timeoutError();	//	Handles ERROR_TIMEOUT
 
 	public:
-
 		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
 
 		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketBufferSize_t rxBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketBufferSize_t txBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketCloseMode_t closeMode = socketCloseMode_t::AUTO_CLOSE ,opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module

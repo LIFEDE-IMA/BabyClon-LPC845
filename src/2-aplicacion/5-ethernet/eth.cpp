@@ -16,14 +16,24 @@
 #include "eth.h"
 
 Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Spi::SPI_SLAVE_SELECT_ACTIVE_LOW), m_timeoutTimer(5, SysTimer::SINGLE, SysTimer::T_SEG){
-	m_pendingReadFlag = false;
 	m_socketTransferDone = false;
-	m_doneFlag = nullptr;
-	m_readBuffer = nullptr;
-	m_readLen = 0;
-	m_sendFinishedFlag = false;
-	m_rcvFinishedFlag = false;
+	m_usrDoneFlag = nullptr;
 	m_initFinishedFlag = false;
+	m_rcvFinishedFlag = false;
+	m_rcvBuffer = nullptr;
+	m_usrAskedRcvLen = m_actualRcvLen = 0;
+	m_sendFinishedFlag = false;
+	m_sendLen = m_sendRemainingLen = m_sendProcessedLen = m_sendCurrentLen = 0;
+	m_transferInProgressFlag = m_transferBlockDoneFlag = false;
+	m_transferRemainingLen = m_transferProcessedLen = m_transferAddr = 0;
+	m_transferData = nullptr;
+	m_transferContext = transferContext_t::NONE;
+	m_usrBufferData = nullptr;
+	m_usrBufferRemainingLen = 0;
+	m_w5500BufferCurrentAddr = m_w5500BufferCurrentLen = 0;
+	m_w5500WrapAroundFlag = false;
+	m_w5500BufferSize = m_w5500BufferMask = m_rxBufferSize = m_rxBufferMask = m_txBufferSize = m_txBufferMask = 0;
+	m_sendBuffer = nullptr;
 	m_currentConfigStat = configState_t::CONFIG_NONE;
 	m_socketStat = socketStat_t::SOCK_CLOSED;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
@@ -31,7 +41,10 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_ethError = ethErrorState_t::ERROR_NONE;
 }
 
-void Eth::transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode){
+void Eth::transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode){
+	if((len == 0) || (len > MAX_SPI_TRANSFER_LEN))
+		return;
+
 	m_txBuffer[0] = (addr >> 8);	//	Address High
 	m_txBuffer[1] = (addr & 0xFF);	//	Address Low
 	m_txBuffer[2] = ((block << 3) | (rwMode << 2) | (opMode << 0));
@@ -47,91 +60,170 @@ void Eth::transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data,
 	Transmit(m_txBuffer, m_rxBuffer, (len + 3), f_done);
 }
 
+void Eth::transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode){
+	if(len == 0)
+		return;
+
+	m_transferAddr = addr;
+	m_transferRemainingLen = len;
+	m_transferProcessedLen = 0;
+	m_transferData = data;
+	m_transferBlock = block;
+	m_transferRWMode = rwMode;
+	m_transferOpMode = opMode;
+
+	m_transferBlockDoneFlag = false;
+	if(f_done != nullptr)	m_usrDoneFlag = f_done;				//	True when all packets where send/received (app sets it true)
+	m_transferInProgressFlag = true;
+
+	uint16_t blockLen = ((m_transferRemainingLen > MAX_SPI_TRANSFER_LEN) ? MAX_SPI_TRANSFER_LEN : m_transferRemainingLen);
+
+	Eth::transferBlock(m_transferAddr, m_transferBlock, m_transferRWMode, m_transferData, blockLen, &m_transferBlockDoneFlag, m_transferOpMode);
+}
+
+void Eth::startNextBufferTransfer(){
+	if(m_usrBufferRemainingLen == 0)
+		return;
+
+	if(m_w5500WrapAroundFlag){	//	Need of W5500 Circular Buffer
+		uint16_t offset = (m_w5500BufferCurrentAddr & m_w5500BufferMask);
+		uint16_t bytesTillWrap = (m_w5500BufferSize - offset);
+		m_w5500BufferCurrentLen = ((m_usrBufferRemainingLen < bytesTillWrap) ? m_usrBufferRemainingLen : bytesTillWrap);
+	}else{	//	No need of W5500 Circular Buffer
+		m_w5500BufferCurrentLen = m_usrBufferRemainingLen;
+	}
+
+	if(m_transferContext == transferContext_t::WRITE_BUFFER){
+		Eth::transfer(m_w5500BufferCurrentAddr, m_transferBlock, rwMode_t::WRITE, m_usrBufferData, m_w5500BufferCurrentLen, nullptr, m_transferOpMode);
+	}else if(m_transferContext == transferContext_t::READ_BUFFER){
+		Eth::transfer(m_w5500BufferCurrentAddr, m_transferBlock, rwMode_t::READ, nullptr, m_w5500BufferCurrentLen, nullptr, m_transferOpMode);
+	}
+}
+
 void Eth::readByte(uint16_t addr, block_t block, volatile bool *f_done, opMode_t opMode){
-	Eth::transfer(addr, block, rwMode_t::READ, nullptr, 1, f_done, opMode);
+	m_transferContext = transferContext_t::GENERIC;
+	m_transferByte = 0;
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::READ;
+	m_transferOpMode = opMode;
+	Eth::transfer(addr, block, rwMode_t::READ, &m_transferByte, 1, f_done, opMode);
 }
 
 uint8_t Eth::readByteAndWait(uint16_t addr, block_t block, opMode_t opMode){
 	volatile bool f_done = false;
 
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::READ;
+	m_transferOpMode = opMode;
+
 	Eth::transfer(addr, block, rwMode_t::READ, nullptr, 1, &f_done, opMode);
 
-	while(!f_done);
+	while(!m_transferBlockDoneFlag);
 
 	return m_rxBuffer[3];
 }
 
 void Eth::writeByte(uint16_t addr, block_t block, uint8_t data, volatile bool *f_done, opMode_t opMode){
-	Eth::transfer(addr, block, rwMode_t::WRITE, &data, 1, f_done, opMode);
+	m_transferContext = transferContext_t::GENERIC;
+	m_transferByte = data;
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::WRITE;
+	m_transferOpMode = opMode;
+	Eth::transfer(addr, block, rwMode_t::WRITE, &m_transferByte, 1, f_done, opMode);
 }
 
 void Eth::readBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode){
-	if(block != block_t::SOCKET0_RX_BUFFER_BLOCK){
-		m_readBuffer = buffer;	//	Saves user buffer addr
-		m_readLen = len;
-		m_doneFlag = f_done;
-		m_pendingReadFlag = true;
-
-		Eth::transfer(addr, block, rwMode_t::READ, nullptr, len, f_done, opMode);
+	if((len == 0) || (buffer == nullptr))
 		return;
+
+
+	m_transferContext = transferContext_t::READ_BUFFER;
+
+	m_usrBufferData = buffer;
+	m_usrBufferRemainingLen = len;
+	m_w5500BufferCurrentAddr = addr;
+
+	if(block == block_t::SOCKET0_RX_BUFFER_BLOCK){	//	Need of W5500 circular buffer
+		m_w5500WrapAroundFlag = true;
+		m_w5500BufferSize = m_rxBufferSize;
+		m_w5500BufferMask = m_rxBufferMask;
+	}else{	//	No need of W5500 circular buffer
+		m_w5500WrapAroundFlag = false;
+		m_w5500BufferSize = 0;
+		m_w5500BufferMask = 0;
 	}
-	uint16_t offset = addr & m_rxBufferMask;
 
-	if((offset + len) <= m_rxBufferSize){
-		m_readBuffer = buffer;	//	Saves user buffer addr
-		m_readLen = len;
-		m_doneFlag = f_done;
-		m_pendingReadFlag = true;
+	m_usrDoneFlag = f_done;
+	if(m_usrDoneFlag != nullptr)
+		*(m_usrDoneFlag) = false;
 
-		Eth::transfer(addr, block, rwMode_t::READ, nullptr, len, f_done, opMode);
-		return;
-	}else{	//	W5500 Circular Buffer
-		m_pendingReadWrap = true;
-		m_firstReadLen = (m_rxBufferSize - offset);
-		m_secondReadLen = (len - m_firstReadLen);
-		m_userReadBuffer = buffer;
-		m_readBuffer = buffer;	//	Saves user buffer addr
-		m_readLen = m_firstReadLen;
-		m_doneFlag = f_done;
-		m_pendingReadFlag = true;
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::READ;
+	m_transferOpMode = opMode;
 
-		Eth::transfer(addr, block, rwMode_t::READ, nullptr, m_firstReadLen, f_done, opMode);
-	}
+	//	handler() manages transfer() function so we dont depend on whether or not theres a wrap-around / many SPI packets
+	Eth::startNextBufferTransfer();
 }
 
-void Eth::readBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode){
-	volatile bool f_done = false;
+bool Eth::readBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode){
+	static volatile bool f_done = false;
+	static bool f_first = true;
 
-	readBuffer(addr, block, buffer, len, &f_done, opMode);
+	if(f_first){
+		f_done = false;
+		m_transferBlock = block;
+		m_transferRWMode = rwMode_t::READ;
+		m_transferOpMode = opMode;
 
-	while(!f_done);
-
-	for(uint16_t i = 0; i < len; i++){
-		buffer[i] = m_rxBuffer[(i+3)];
+		readBuffer(addr, block, buffer, len, &f_done, opMode);
+		f_first = false;
 	}
+
+	if(f_done){
+		f_first = true;
+		return true;
+	}
+	return false;
 }
 
 void Eth::writeBuffer(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, volatile bool *f_done, opMode_t opMode){
-	if(block != block_t::SOCKET0_TX_BUFFER_BLOCK){
-		Eth::transfer(addr, block, rwMode_t::WRITE, buffer, len, f_done, opMode);
+	if((len == 0) || (buffer == nullptr))
 		return;
+
+	m_transferContext = transferContext_t::WRITE_BUFFER;
+
+	m_usrBufferData = buffer;
+	m_usrBufferRemainingLen = len;
+	m_w5500BufferCurrentAddr = addr;
+
+	if(block == block_t::SOCKET0_TX_BUFFER_BLOCK){	//	Need of W5500 circular buffer
+		m_w5500WrapAroundFlag = true;
+		m_w5500BufferSize = m_txBufferSize;
+		m_w5500BufferMask = m_txBufferMask;
+	}else{	//	No need of W5500 circular buffer
+		m_w5500WrapAroundFlag = false;
+		m_w5500BufferSize = 0;
+		m_w5500BufferMask = 0;
 	}
 
-	uint16_t offset = addr & m_txBufferMask;
+	m_usrDoneFlag = f_done;
+	if(m_usrDoneFlag != nullptr)
+		*(m_usrDoneFlag) = false;
 
-	if((offset + len) <= m_txBufferSize){
-		Eth::transfer(addr, block, rwMode_t::WRITE, buffer, len, f_done, opMode);
-	}else{	//	W5500 Circular Buffer
-		uint16_t firstPacketLen = (m_txBufferSize - offset);
-		uint16_t secondPacketLen = (len - firstPacketLen);
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::WRITE;
+	m_transferOpMode = opMode;
 
-		Eth::transfer(addr, block, rwMode_t::WRITE, buffer, firstPacketLen, nullptr, opMode);
-		Eth::transfer(0, block, rwMode_t::WRITE, buffer + firstPacketLen, secondPacketLen, f_done, opMode);
-	}
+	//	handler() manages transfer() function so we dont depend on whether or not theres a wrap-around / many SPI packets
+	Eth::startNextBufferTransfer();
 }
 
 void Eth::writeBufferAndWait(uint16_t addr, block_t block, uint8_t *buffer, uint16_t len, opMode_t opMode){
 	volatile bool f_done = false;
+
+	m_transferBlock = block;
+	m_transferRWMode = rwMode_t::WRITE;
+	m_transferOpMode = opMode;
 
 	Eth::writeBuffer(addr, block, buffer, len, &f_done, opMode);
 
@@ -146,8 +238,8 @@ void Eth::setIPAndWait(uint8_t ip[4], opMode_t opMode){
 	Eth::writeBufferAndWait(registerAddr_t::SIPR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, ip, 4, opMode);
 }
 
-void Eth::readIP(uint8_t ip[4], opMode_t opMode){
-	Eth::readBufferAndWait(registerAddr_t::SIPR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, ip, 4, opMode);
+bool Eth::readIP(uint8_t ip[4], opMode_t opMode){
+	return Eth::readBufferAndWait(registerAddr_t::SIPR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, ip, 4, opMode);
 }
 
 void Eth::setGateway(uint8_t gateway[4], volatile bool *f_done, opMode_t opMode){
@@ -158,8 +250,8 @@ void Eth::setGatewayAndWait(uint8_t gateway[4], opMode_t opMode){
 	Eth::writeBufferAndWait(registerAddr_t::GAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, gateway, 4, opMode);
 }
 
-void Eth::readGateway(uint8_t gateway[4], opMode_t opMode){
-	Eth::readBufferAndWait(registerAddr_t::GAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, gateway, 4, opMode);
+bool Eth::readGateway(uint8_t gateway[4], opMode_t opMode){
+	return Eth::readBufferAndWait(registerAddr_t::GAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, gateway, 4, opMode);
 }
 
 void Eth::setSubnet(uint8_t subnet[4], volatile bool *f_done, opMode_t opMode){
@@ -170,8 +262,8 @@ void Eth::setSubnetAndWait(uint8_t subnet[4], opMode_t opMode){
 	Eth::writeBufferAndWait(registerAddr_t::SUBR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, subnet, 4, opMode);
 }
 
-void Eth::readSubnet(uint8_t subnet[4], opMode_t opMode){
-	Eth::readBufferAndWait(registerAddr_t::SUBR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, subnet, 4, opMode);
+bool Eth::readSubnet(uint8_t subnet[4], opMode_t opMode){
+	return Eth::readBufferAndWait(registerAddr_t::SUBR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, subnet, 4, opMode);
 }
 
 void Eth::setMAC(uint8_t mac[6], volatile bool *f_done, opMode_t opMode){
@@ -182,8 +274,8 @@ void Eth::setMACAndWait(uint8_t mac[6], opMode_t opMode){
 	Eth::writeBufferAndWait(registerAddr_t::SHAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, mac, 6, opMode);
 }
 
-void Eth::readMAC(uint8_t mac[6], opMode_t opMode){
-	Eth::readBufferAndWait(registerAddr_t::SHAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, mac, 6, opMode);
+bool Eth::readMAC(uint8_t mac[6], opMode_t opMode){
+	return Eth::readBufferAndWait(registerAddr_t::SHAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, mac, 6, opMode);
 }
 
 void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketBufferSize_t rxBufferSize, socketBufferSize_t txBufferSize, socketCloseMode_t closeMode,opMode_t opMode){
@@ -212,7 +304,7 @@ void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac
 }
 
 bool Eth::isBusy() const{
-	return (m_ethState != ethState_t::ETH_IDLE);
+	return ((m_ethState != ethState_t::ETH_IDLE) || m_transferInProgressFlag);
 }
 
 bool Eth::isReady() const{
@@ -275,11 +367,14 @@ bool Eth::socketConnected() const{
 }
 
 void Eth::socketSend(uint8_t *buffer, uint16_t len){
-	if(!Eth::isReady())
+	if((!Eth::isReady()) || (buffer == nullptr) || (len == 0))
 		return;
 
 	m_sendBuffer = buffer;
 	m_sendLen = len;
+	m_sendRemainingLen = m_sendLen;
+	m_sendProcessedLen = 0;
+	m_sendCurrentLen = 0;
 	m_sendFinishedFlag = false;
 
 	m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
@@ -290,7 +385,7 @@ bool Eth::socketSendFinished() const{
 }
 
 void Eth::socketReceive(uint8_t *buffer, uint16_t maxLen){
-	if(!Eth::isReady())
+	if((!Eth::isReady()) || (buffer == nullptr) || (maxLen == 0))
 		return;
 
 	m_rcvBuffer = buffer;
@@ -329,36 +424,101 @@ bool Eth::socketCloseFinished() const{
 }
 
 void Eth::handler(){
-	if(m_pendingReadFlag){
-		if(*m_doneFlag){
-			for(uint16_t i = 0; i < m_readLen; i++){
-				m_readBuffer[i] = m_rxBuffer[(i+3)];
-			}
-			if(m_pendingReadWrap){	//	W5500 Circular Buffer
-				m_pendingReadWrap = false;
-				m_readBuffer = (m_userReadBuffer + m_firstReadLen);
-				m_readLen = m_secondReadLen;
 
-				Eth::transfer(0, block_t::SOCKET0_RX_BUFFER_BLOCK, rwMode_t::READ, nullptr, m_secondReadLen, m_doneFlag);
+	//	Finished a single SPI transfer (single packet)
 
-				return;
+	if(m_transferInProgressFlag && m_transferBlockDoneFlag){
+		m_transferBlockDoneFlag = false;
+
+		uint16_t blockLen = ((m_transferRemainingLen > MAX_SPI_TRANSFER_LEN) ? MAX_SPI_TRANSFER_LEN : m_transferRemainingLen);
+
+		if(m_transferRWMode == rwMode_t::READ){	//	If it was READ transfer
+			if(m_transferContext == transferContext_t::READ_BUFFER){	//	READ BUFFER transfer
+				for(uint16_t i = 0; i < blockLen; i++){	//	If m_transferProcessedLen != 0 => bytes transfer > MAX_SPI_TRANSFER_LEN
+					m_usrBufferData[(m_transferProcessedLen + i)] = m_rxBuffer[(i + 3)];
+				}
+			}else if(m_transferContext == transferContext_t::GENERIC){
+				m_transferByte = m_rxBuffer[3];
 			}
-			m_pendingReadFlag = false;
-			m_pendingReadWrap = false;
-			m_readBuffer = nullptr;
-			m_userReadBuffer = nullptr;
-			m_doneFlag = nullptr;
-			m_readLen = 0;
-			m_firstReadLen = 0;
-			m_secondReadLen = 0;
+		}
+		m_transferProcessedLen += blockLen;
+		m_transferRemainingLen -= blockLen;
+
+		if(m_transferRemainingLen > 0){	//	More SPI packets needed for current W5500 transfer
+			uint16_t nextBlockLen = ((m_transferRemainingLen > MAX_SPI_TRANSFER_LEN) ? MAX_SPI_TRANSFER_LEN : m_transferRemainingLen);
+
+			if(m_transferRWMode == rwMode_t::WRITE){	//	If it was WRITE transfer
+				m_transferData += blockLen;
+			}else{	//	If it was READ transfer
+				m_transferData = nullptr;
+			}
+
+			Eth::transferBlock((m_transferAddr + m_transferProcessedLen), m_transferBlock, m_transferRWMode, m_transferData, nextBlockLen, &m_transferBlockDoneFlag, m_transferOpMode);
+		}else{	//	No more SPI packets needed, current transfer finished
+			m_transferInProgressFlag = false;
 		}
 	}
 
+	//	Current ONE byte operation finished ( READ/WRITE BYTE )
+
+	if((!m_transferInProgressFlag) && (m_transferContext == transferContext_t::GENERIC)){
+		m_transferContext = transferContext_t::NONE;
+
+		m_transferData = nullptr;
+		m_transferRemainingLen = 0;
+		m_transferProcessedLen = 0;
+
+		if(m_usrDoneFlag != nullptr){
+			*(m_usrDoneFlag) = true;
+			m_usrDoneFlag = nullptr;
+		}
+	}
+
+
+	//	Current W5500/user-buffer operation finished ( READ/WRITE BUFFER )
+
+	if((!m_transferInProgressFlag) && ((m_transferContext == transferContext_t::READ_BUFFER) || (m_transferContext == transferContext_t::WRITE_BUFFER))){
+		m_usrBufferData += m_w5500BufferCurrentLen;
+		m_usrBufferRemainingLen -= m_w5500BufferCurrentLen;
+
+		if(m_w5500WrapAroundFlag){	//	W5500 Circular Buffer
+			uint16_t offset = (m_w5500BufferCurrentAddr & m_w5500BufferMask);
+			offset += m_w5500BufferCurrentLen;
+
+			if(offset >= m_w5500BufferSize)
+				offset -= m_w5500BufferSize;
+
+			m_w5500BufferCurrentAddr = offset;
+		}else{	//	No need of W5500 Circular Buffer
+			m_w5500BufferCurrentAddr += m_w5500BufferCurrentLen;
+		}
+
+		if(m_usrBufferRemainingLen == 0){	//	Completed User Operation
+			m_transferContext = transferContext_t::NONE;
+
+			m_transferData = nullptr;
+			m_transferRemainingLen = 0;
+			m_transferProcessedLen = 0;
+
+			m_usrBufferData = nullptr;
+			m_w5500BufferCurrentLen = 0;
+
+			if(m_usrDoneFlag != nullptr){
+				*(m_usrDoneFlag) = true;
+				m_usrDoneFlag = nullptr;
+			}
+		}else{	//	More data remains
+			Eth::startNextBufferTransfer();
+		}
+	}
+
+
 	// Ethernet States Machine
+
 
 	switch(m_ethState){
 		case ethState_t::ETH_IDLE:
-			if(m_socketCloseMode == socketCloseMode_t::AUTO_CLOSE && !m_pendingReadFlag){
+			if(m_socketCloseMode == socketCloseMode_t::AUTO_CLOSE && !m_transferInProgressFlag){
 				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_STATUS_CHECK);
 			}
 			break;
@@ -584,6 +744,8 @@ void Eth::handler(){
 				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_CONNECT_CHECK_STATUS);
 			}else if(m_socketStat == socketStat_t::SOCK_CLOSED){
 				//	ERROR
+				m_timeoutTimer.stopTimer();
+				m_ethError = ethErrorState_t::ERROR_SOCK_CLOSED;
 				m_ethState = ethState_t::ETH_IDLE;
 			}
 			break;
@@ -611,7 +773,10 @@ void Eth::handler(){
 				break;
 			}
 			if(m_socketTransferDone){
-				if(((m_txFreeSize[0] << 8) | m_txFreeSize[1]) >= m_sendLen){
+				uint16_t availableSendLen = ((m_txFreeSize[0] << 8) | m_txFreeSize[1]);
+				m_sendCurrentLen = ((availableSendLen >= m_sendRemainingLen) ? m_sendRemainingLen : availableSendLen);
+
+				if(m_sendCurrentLen != 0){
 					m_timeoutTimer.stopTimer();
 					m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_WR;
 				}else{
@@ -632,13 +797,15 @@ void Eth::handler(){
 
 		case ethState_t::ETH_SOCKET_SEND_WRITE_BUFFER:
 			m_socketTransferDone = false;
-			Eth::writeBuffer(((m_txWritePointer[0] << 8) | m_txWritePointer[1]), block_t::SOCKET0_TX_BUFFER_BLOCK, m_sendBuffer, m_sendLen, &m_socketTransferDone);
+			Eth::writeBuffer(((m_txWritePointer[0] << 8) | m_txWritePointer[1]), block_t::SOCKET0_TX_BUFFER_BLOCK, (m_sendBuffer + m_sendProcessedLen), m_sendCurrentLen, &m_socketTransferDone);
 			m_ethState = ethState_t::ETH_SOCKET_SEND_WAIT_WRITE_BUFFER;
 			break;
 
 		case ethState_t::ETH_SOCKET_SEND_WAIT_WRITE_BUFFER:
 			if(m_socketTransferDone){
-				m_nextTxWritePointer = ((m_txWritePointer[0] << 8) | m_txWritePointer[1]) + m_sendLen;
+				m_sendRemainingLen -= m_sendCurrentLen;
+				m_sendProcessedLen += m_sendCurrentLen;
+				m_nextTxWritePointer = ((m_txWritePointer[0] << 8) | m_txWritePointer[1]) + m_sendCurrentLen;
 				m_ethState = ethState_t::ETH_SOCKET_SEND_WRITE_TX_WR;
 			}
 			break;
@@ -682,6 +849,8 @@ void Eth::handler(){
 				if(m_socketInterruptStat & socketInterruptStat_t::SEND_OK_INT){
 					m_timeoutTimer.stopTimer();
 					m_ethState = ethState_t::ETH_SOCKET_SEND_CLEAR_INTERRUPT;
+				}else if(m_socketInterruptStat & socketInterruptStat_t::TIMEOUT_INT){
+					Eth::timeoutError();
 				}else{
 					m_ethState = ethState_t::ETH_SOCKET_SEND_READ_INTERRUPT_STAT;
 				}
@@ -695,7 +864,13 @@ void Eth::handler(){
 			break;
 
 		case ethState_t::ETH_SOCKET_SEND_WAIT_CLEAR_INTERRUPT:
-			if(m_socketTransferDone) m_ethState = ethState_t::ETH_SOCKET_SEND_FINISHED;
+			if(m_socketTransferDone){
+				if(m_sendRemainingLen == 0){
+					m_ethState = ethState_t::ETH_SOCKET_SEND_FINISHED;
+				}else{
+					m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
+				}
+			}
 			break;
 
 		case ethState_t::ETH_SOCKET_SEND_FINISHED:

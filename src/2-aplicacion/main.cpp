@@ -24,14 +24,14 @@ int main(void) {
 	Spi spiMaster(0, 23, 0, 26, 0, 21, Spi::SPI_NUMBER_0, 1000000);
 	Eth eth(0, 22, spiMaster);
 
-	uint8_t ip[4] = {10, 0, 28, 50};
-	uint8_t gateway[4] = {10, 0, 28, 1};
+	uint8_t ip[4] = {192, 168, 0, 50};
+	uint8_t gateway[4] = {192, 168, 0, 1};
 	uint8_t subnet[4] = {255, 255, 255, 0};
 	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x33};
 
 	uint8_t txMsg[] = "Hola desde LPC845";
-	uint8_t txMsg2[] = "Hola desde LPC845, son 49 bytes por transferencia";
-	uint8_t rxMsg[120];
+	uint8_t txMsg2[] = "Hola desde LPC845, via modulo ethernet w5500, este mensaje es bastante largo para superar los 128 bytes por transferencia que tiene el buffer. Hoy es martes 11 de Agosto y el total son 194 bytes";
+	uint8_t rxMsg[250] = {0};
 
 	bool f_openStarted = false;
 	bool f_connectStarted = false;
@@ -54,12 +54,12 @@ int main(void) {
     	}
 
     	if(eth.isReady() && !f_openStarted){
-            eth.socketOpenTCP(5000);
-            f_openStarted = true;
+    		eth.socketOpenTCP(5000);
+    		f_openStarted = true;
     	}
 
     	if(eth.socketOpened() && !f_connectStarted){
-    		uint8_t serverIP[4] = {10, 0, 28, 69};
+    		uint8_t serverIP[4] = {192, 168, 0, 7};
 
     		eth.socketConnect(serverIP, 5000);
 
@@ -80,11 +80,11 @@ int main(void) {
         		f_receiveStarted = false;
         		static uint16_t i = 0;
         		i++;
-        		if(i >= 10){
+        		if(i >= 1000){
         			i = 0;
         			static uint8_t j = 0;
         			j++;
-        			if(j >= 10){
+        			if(j >= 100){
         				j = 0;
         				eth.socketDisconnect();
         				f_closeStarted = true;
