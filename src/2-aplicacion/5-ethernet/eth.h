@@ -152,7 +152,8 @@ class Eth : public SpiSlave{
 			SOCK_LISTEN = 0x14,
 			SOCK_SYNSENT = 0x15,
 			SOCK_ESTABLISHED = 0x17,
-			SOCK_CLOSE_WAIT = 0x1C
+			SOCK_CLOSE_WAIT = 0x1C,
+			SOCK_UDP = 0x22
 		};
 
 
@@ -184,18 +185,23 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_OPEN_WAIT_WRITE_COMMAND,
 			ETH_SOCKET_OPEN_CHECK_STATUS,
 			ETH_SOCKET_OPEN_FINISHED,
-			//	CONNECT SOCKET
-			ETH_SOCKET_CONNECT_WRITE_IP,
-			ETH_SOCKET_CONNECT_WAIT_WRITE_IP,
-			ETH_SOCKET_CONNECT_WRITE_PORT,
-			ETH_SOCKET_CONNECT_WAIT_WRITE_PORT,
+			//	CONNECT SOCKET ( TCP ) / SET DESTINATION ( UDP )
+			ETH_SOCKET_WRITE_IP,
+			ETH_SOCKET_WAIT_WRITE_IP,
+			ETH_SOCKET_WRITE_PORT,
+			ETH_SOCKET_WAIT_WRITE_PORT,
+			//	CONNECT SOCKET ( TCP )
 			ETH_SOCKET_CONNECT_WRITE_COMMAND,
 			ETH_SOCKET_CONNECT_WAIT_WRITE_COMMAND,
 			ETH_SOCKET_CONNECT_CHECK_STATUS,
 			ETH_SOCKET_CONNECT_FINISHED,
-			//	SEND SOCKET
+			//	SEND SOCKET ( TCP & UDP )
 			ETH_SOCKET_SEND_READ_TX_FSR,
-			ETH_SOCKET_SEND_WAIT_TX_FSR,
+			//	SEND SOCKET ( TCP )
+			ETH_SOCKET_SEND_TCP_WAIT_TX_FSR,
+			//	SEND SOCKET ( UDP )
+			ETH_SOCKET_SEND_UDP_WAIT_TX_FSR,
+			//	SEND SOCKET ( TCP & UDP )
 			ETH_SOCKET_SEND_READ_TX_WR,
 			ETH_SOCKET_SEND_WAIT_READ_TX_WR,
 			ETH_SOCKET_SEND_WRITE_BUFFER,
@@ -235,7 +241,7 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_CLOSE_FINISHED
 		};
 
-		enum ethErrorState_t{
+		enum ethErrorStat_t{
 			ERROR_NONE,
 			ERROR_TIMEOUT,
 			ERROR_SOCK_CLOSED
@@ -297,7 +303,8 @@ class Eth : public SpiSlave{
 
 		//	---------------	SOCKETS	---------------
 		ethState_t m_ethState;
-		ethErrorState_t m_ethError;
+		ethErrorStat_t m_ethError;
+		socketMode_t m_socketMode;
 
 		SysTimer m_timeoutTimer;	//	To avoid blocking states
 		bool m_timeoutFlag;
@@ -338,7 +345,11 @@ class Eth : public SpiSlave{
 		uint8_t m_socketInterruptStat;
 
 		volatile bool m_socketTransferDone;
-		//	---------------------------------------------
+
+		//	---------------	UDP	---------------
+		bool m_destinationSetFlag;
+
+		//	-----------------------------------
 
 		void transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Makes ONE transfer of [ MAX_SPI_TRANSFER_LEN ] bytes
 		void transfer(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);			//	Makes a transfer of X needed BLOCKS ( X * MAX_SPI_TRANSFER_LEN bytes) (r/w) with W5500
@@ -383,13 +394,17 @@ class Eth : public SpiSlave{
 		bool isLinkUp();						//	Returns True if Link is Up (Electrical Connection between W5500 and Router)
 		socketStat_t socketStatus() const;		//	Returns Socket Status
 		bool isReady() const;					//	Return true if eth can make an operation
+		ethErrorStat_t currentError() const;	//	Returns Socket Current Error Stat
 
-		void socketOpenTCP(uint16_t localPort);							//	Opens Socket, TCP Socket Mode
+		void socketOpen(socketMode_t sockMode, uint16_t localPort);		//	Opens Socket, TCP / UDP Socket Mode
 		bool socketOpened() const;										//	Returns True if Socket is Opened
 		void socketConnect(uint8_t remoteIP[4], uint16_t remotePort);	//	Connects Socket
 		bool socketConnected() const;									//	Returns True if Socket is Connected
-		void socketSend(uint8_t *buffer, uint16_t len);					//	Sends Data to Server
+		void socketSetDestUDP(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
+		bool socketDestSetUDP() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
+		void socketSendTCP(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, TCP Socket Mode
 		bool socketSendFinished() const;								//	Returns True if Data was sent to Server
+		void socketSendUDP(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode
 		void socketReceive(uint8_t *buffer, uint16_t maxLen);			//	Receives Data from Server
 		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
 		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server

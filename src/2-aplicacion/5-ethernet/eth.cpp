@@ -19,6 +19,7 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_socketTransferDone = false;
 	m_usrDoneFlag = nullptr;
 	m_initFinishedFlag = false;
+	m_destinationSetFlag = false;
 	m_rcvFinishedFlag = false;
 	m_rcvBuffer = nullptr;
 	m_usrAskedRcvLen = m_actualRcvLen = 0;
@@ -38,7 +39,7 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_socketStat = socketStat_t::SOCK_CLOSED;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
 	m_ethState = ethState_t::ETH_IDLE;
-	m_ethError = ethErrorState_t::ERROR_NONE;
+	m_ethError = ethErrorStat_t::ERROR_NONE;
 }
 
 void Eth::transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode){
@@ -307,10 +308,6 @@ bool Eth::isBusy() const{
 	return ((m_ethState != ethState_t::ETH_IDLE) || m_transferInProgressFlag);
 }
 
-bool Eth::isReady() const{
-	return (!Eth::isBusy() && m_initFinishedFlag);
-}
-
 bool Eth::isLinkUp(){
 	uint8_t PHY = Eth::readByteAndWait(registerAddr_t::PHYCFGR_REGISTER, block_t::COMMON_REGISTER_BLOCK, opMode_t::VAR_DATA_LEN);
 
@@ -324,9 +321,15 @@ void Eth::socketRequestStatus(ethState_t nextStateAfterStatusRead){
     m_ethState = ethState_t::ETH_SOCKET_STATUS_READ;
 }
 
+bool Eth::isReady() const{
+	return (!Eth::isBusy() && m_initFinishedFlag);
+}
+
+Eth::ethErrorStat_t Eth::currentError() const{ return m_ethError; }
+
 void Eth::timeoutError(){
 	m_timeoutTimer.stopTimer();
-	m_ethError = ethErrorState_t::ERROR_TIMEOUT;
+	m_ethError = ethErrorStat_t::ERROR_TIMEOUT;
 	m_ethState = ethState_t::ETH_IDLE;
 }
 
@@ -335,18 +338,25 @@ void Eth::timeoutError(){
 }
 */
 
-void Eth::socketOpenTCP(uint16_t localPort){
+void Eth::socketOpen(socketMode_t sockMode, uint16_t localPort){
 	if(!Eth::isReady())
 		return;
 
 	m_localPortBuffer[0] = (localPort >> 8);
 	m_localPortBuffer[1] = (localPort & 0xFF);
 
+	m_socketMode = sockMode;
+
 	m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
 }
 
 bool Eth::socketOpened() const{
-	return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_INIT));
+	if(m_socketMode == socketMode_t::TCP_MODE)
+		return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_INIT));
+	else if(m_socketMode == socketMode_t::UDP_MODE)
+		return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_UDP));
+	else
+		return false;
 }
 
 void Eth::socketConnect(uint8_t remoteIP[4], uint16_t remotePort){
@@ -359,15 +369,34 @@ void Eth::socketConnect(uint8_t remoteIP[4], uint16_t remotePort){
 	m_remotePortBuffer[0] = (remotePort >> 8);
 	m_remotePortBuffer[1] = (remotePort & 0xFF);
 
-	m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_IP;
+	m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
 }
 
 bool Eth::socketConnected() const{
 	return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_ESTABLISHED));
 }
 
-void Eth::socketSend(uint8_t *buffer, uint16_t len){
-	if((!Eth::isReady()) || (buffer == nullptr) || (len == 0))
+void Eth::socketSetDestUDP(uint8_t remoteIP[4], uint16_t remotePort){
+	if((!Eth::isReady()) || (m_socketMode != socketMode_t::UDP_MODE))
+		return;
+
+	m_destinationSetFlag = false;
+
+	for(uint8_t i = 0; i < 4; i++)
+		m_remoteIPBuffer[i] = remoteIP[i];
+
+	m_remotePortBuffer[0] = (remotePort >> 8);
+	m_remotePortBuffer[1] = (remotePort & 0xFF);
+
+	m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
+}
+
+bool Eth::socketDestSetUDP() const{
+	return ((!Eth::isBusy()) && m_destinationSetFlag);
+}
+
+void Eth::socketSendTCP(uint8_t *buffer, uint16_t len){
+	if((!Eth::isReady()) || (buffer == nullptr) || (len == 0) || (m_socketMode != socketMode_t::TCP_MODE))
 		return;
 
 	m_sendBuffer = buffer;
@@ -380,8 +409,25 @@ void Eth::socketSend(uint8_t *buffer, uint16_t len){
 	m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
 }
 
-bool Eth::socketSendFinished() const{
-	return (!Eth::isBusy() && m_sendFinishedFlag);
+bool Eth::socketSendFinished() const{ return (!Eth::isBusy() && m_sendFinishedFlag); }
+
+void Eth::socketSendUDP(uint8_t *buffer, uint16_t len){
+	if((!Eth::isReady()) 	  ||
+	   (buffer == nullptr)    ||
+	   (len == 0) 			  ||
+	   (len > m_txBufferSize) ||
+	   !m_destinationSetFlag  ||
+	   (m_socketMode != socketMode_t::UDP_MODE))
+		return;
+
+	m_sendBuffer = buffer;
+	m_sendLen = len;
+	m_sendProcessedLen = 0;
+	m_sendCurrentLen = 0;
+	m_sendRemainingLen = 0;
+	m_sendFinishedFlag = false;
+
+	m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
 }
 
 void Eth::socketReceive(uint8_t *buffer, uint16_t maxLen){
@@ -644,7 +690,7 @@ void Eth::handler(){
 
 		case ethState_t::ETH_SOCKET_OPEN_WRITE_MODE:
 			m_socketTransferDone = false;
-			Eth::writeByte(registerAddr_t::Sn_MR_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, socketMode_t::TCP_MODE, &m_socketTransferDone);
+			Eth::writeByte(registerAddr_t::Sn_MR_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, m_socketMode, &m_socketTransferDone);
 			m_ethState = ethState_t::ETH_SOCKET_OPEN_WAIT_WRITE_MODE;
 			break;
 
@@ -681,7 +727,10 @@ void Eth::handler(){
 				Eth::timeoutError();
 				break;
 			}
-			if(m_socketStat == socketStat_t::SOCK_INIT){
+			if((m_socketMode == socketMode_t::TCP_MODE) && (m_socketStat == socketStat_t::SOCK_INIT)){	//	TCP MODE
+				m_timeoutTimer.stopTimer();
+				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
+			}else if((m_socketMode == socketMode_t::UDP_MODE) && (m_socketStat == socketStat_t::SOCK_UDP)){	//	UDP MODE
 				m_timeoutTimer.stopTimer();
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
 			}else{
@@ -695,27 +744,35 @@ void Eth::handler(){
 			break;
 
 
-		//	-------------------------	CONNECT SOCKET	-------------------------	//
+		//	-------------------------	CONNECT SOCKET (TCP)	-------------------------	//
+		//	-------------------------  SET DESTINATION  (UDP)	-------------------------	//
 
 
-		case ethState_t::ETH_SOCKET_CONNECT_WRITE_IP:
+		case ethState_t::ETH_SOCKET_WRITE_IP:
 			m_socketTransferDone = false;
 			Eth::writeBuffer(registerAddr_t::Sn_DIPR0_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, m_remoteIPBuffer, 4, &m_socketTransferDone);
-			m_ethState = ethState_t::ETH_SOCKET_CONNECT_WAIT_WRITE_IP;
+			m_ethState = ethState_t::ETH_SOCKET_WAIT_WRITE_IP;
 			break;
 
-		case ethState_t::ETH_SOCKET_CONNECT_WAIT_WRITE_IP:
-			if(m_socketTransferDone) m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_PORT;
+		case ethState_t::ETH_SOCKET_WAIT_WRITE_IP:
+			if(m_socketTransferDone) m_ethState = ethState_t::ETH_SOCKET_WRITE_PORT;
 			break;
 
-		case ethState_t::ETH_SOCKET_CONNECT_WRITE_PORT:
+		case ethState_t::ETH_SOCKET_WRITE_PORT:
 			m_socketTransferDone = false;
 			Eth::writeBuffer(registerAddr_t::Sn_DPORT0_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, m_remotePortBuffer, 2, &m_socketTransferDone);
-			m_ethState = ethState_t::ETH_SOCKET_CONNECT_WAIT_WRITE_PORT;
+			m_ethState = ethState_t::ETH_SOCKET_WAIT_WRITE_PORT;
 			break;
 
-		case ethState_t::ETH_SOCKET_CONNECT_WAIT_WRITE_PORT:
-			if(m_socketTransferDone) m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_COMMAND;
+		case ethState_t::ETH_SOCKET_WAIT_WRITE_PORT:
+			if(m_socketTransferDone){
+				if(m_socketMode == socketMode_t::TCP_MODE){
+					m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_COMMAND;
+				}else if(m_socketMode == socketMode_t::UDP_MODE){
+					m_destinationSetFlag = true;
+					m_ethState = ethState_t::ETH_SOCKET_CONNECT_FINISHED;
+				}
+			}
 			break;
 
 		case ethState_t::ETH_SOCKET_CONNECT_WRITE_COMMAND:
@@ -745,7 +802,7 @@ void Eth::handler(){
 			}else if(m_socketStat == socketStat_t::SOCK_CLOSED){
 				//	ERROR
 				m_timeoutTimer.stopTimer();
-				m_ethError = ethErrorState_t::ERROR_SOCK_CLOSED;
+				m_ethError = ethErrorStat_t::ERROR_SOCK_CLOSED;
 				m_ethState = ethState_t::ETH_IDLE;
 			}
 			break;
@@ -756,7 +813,7 @@ void Eth::handler(){
 			break;
 
 
-		//	-------------------------	SEND SOCKET	 -------------------------	//
+		//	-------------------------	SEND SOCKET (TCP & UDP)	 -------------------------	//
 
 
 		case ethState_t::ETH_SOCKET_SEND_READ_TX_FSR:
@@ -764,10 +821,17 @@ void Eth::handler(){
 			Eth::readBuffer(registerAddr_t::Sn_TX_FSR0_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, m_txFreeSize, 2, &m_socketTransferDone);
 			if(!m_timeoutTimer.isRunning())
 				m_timeoutTimer.startTimer();	//	5s TIMEOUT
-			m_ethState = ethState_t::ETH_SOCKET_SEND_WAIT_TX_FSR;
+			if(m_socketMode == socketMode_t::TCP_MODE)
+				m_ethState = ethState_t::ETH_SOCKET_SEND_TCP_WAIT_TX_FSR;
+			else if(m_socketMode == socketMode_t::UDP_MODE)
+				m_ethState = ethState_t::ETH_SOCKET_SEND_UDP_WAIT_TX_FSR;
 			break;
 
-		case ethState_t::ETH_SOCKET_SEND_WAIT_TX_FSR:
+
+		//	-------------------------	SEND SOCKET (TCP)	 -------------------------	//
+
+
+		case ethState_t::ETH_SOCKET_SEND_TCP_WAIT_TX_FSR:
 			if(m_timeoutTimer.singleTimerExpired()){
 				Eth::timeoutError();
 				break;
@@ -784,6 +848,32 @@ void Eth::handler(){
 				}
 			}
 			break;
+
+
+		//	-------------------------	SEND SOCKET (UDP)	 -------------------------	//
+
+
+		case ethState_t::ETH_SOCKET_SEND_UDP_WAIT_TX_FSR:
+			if(m_timeoutTimer.singleTimerExpired()){
+				Eth::timeoutError();
+				break;
+			}
+			if(m_socketTransferDone){
+				uint16_t availableSendLen = ((m_txFreeSize[0] << 8) | m_txFreeSize[1]);
+
+				if(availableSendLen >= m_sendLen){
+					m_timeoutTimer.stopTimer();
+					m_sendCurrentLen = m_sendLen;
+					m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_WR;
+				}else{	//	NO SPACE FOR UDP TRANSFER
+					m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
+				}
+			}
+			break;
+
+
+		//	-------------------------	SEND SOCKET (TCP & UDP)	 -------------------------	//
+
 
 		case ethState_t::ETH_SOCKET_SEND_READ_TX_WR:
 			m_socketTransferDone = false;
@@ -803,8 +893,10 @@ void Eth::handler(){
 
 		case ethState_t::ETH_SOCKET_SEND_WAIT_WRITE_BUFFER:
 			if(m_socketTransferDone){
-				m_sendRemainingLen -= m_sendCurrentLen;
-				m_sendProcessedLen += m_sendCurrentLen;
+				if(m_socketMode == socketMode_t::TCP_MODE){
+					m_sendRemainingLen -= m_sendCurrentLen;
+					m_sendProcessedLen += m_sendCurrentLen;
+				}
 				m_nextTxWritePointer = ((m_txWritePointer[0] << 8) | m_txWritePointer[1]) + m_sendCurrentLen;
 				m_ethState = ethState_t::ETH_SOCKET_SEND_WRITE_TX_WR;
 			}

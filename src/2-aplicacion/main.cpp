@@ -54,7 +54,7 @@ int main(void) {
     	}
 
     	if(eth.isReady() && !f_openStarted){
-    		eth.socketOpenTCP(5000);
+    		eth.socketOpen(Eth::TCP_MODE, 5000);
     		f_openStarted = true;
     	}
 
@@ -68,7 +68,7 @@ int main(void) {
 
     	if(eth.socketConnected()){
     		if(!f_sendStarted){
-    			eth.socketSend(txMsg2, (sizeof(txMsg2) - 1));
+    			eth.socketSendTCP(txMsg2, (sizeof(txMsg2) - 1));
     			f_sendStarted = true;
     		}
         	if(eth.socketSendFinished() && !f_receiveStarted){
