@@ -215,13 +215,20 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_SEND_CLEAR_INTERRUPT,
 			ETH_SOCKET_SEND_WAIT_CLEAR_INTERRUPT,
 			ETH_SOCKET_SEND_FINISHED,
-			//	RECEIVE SOCKET
+			//	RECEIVE SOCKET ( TCP & UDP )
 			ETH_SOCKET_RCV_READ_RX_RSR,
 			ETH_SOCKET_RCV_WAIT_READ_RX_RSR,
 			ETH_SOCKET_RCV_READ_RX_RD,
 			ETH_SOCKET_RCV_WAIT_READ_RX_RD,
-			ETH_SOCKET_RCV_READ_BUFFER,
-			ETH_SOCKET_RCV_WAIT_READ_BUFFER,
+			//	RECEIVE SOCKET ( TCP )
+			ETH_SOCKET_RCV_TCP_READ_BUFFER,
+			ETH_SOCKET_RCV_TCP_WAIT_READ_BUFFER,
+			//	RECEIVE SOCKET ( UDP )
+			ETH_SOCKET_RCV_UDP_READ_HEADER,
+			ETH_SOCKET_RCV_UDP_WAIT_READ_HEADER,
+			ETH_SOCKET_RCV_UDP_READ_PAYLOAD,
+			ETH_SOCKET_RCV_UDP_WAIT_READ_PAYLOAD,
+			//	RECEIVE SOCKET ( TCP & UDP )
 			ETH_SOCKET_RCV_WRITE_RX_RD,
 			ETH_SOCKET_RCV_WAIT_WRITE_RX_RD,
 			ETH_SOCKET_RCV_WRITE_COMMAND,
@@ -229,12 +236,14 @@ class Eth : public SpiSlave{
 			ETH_SOCKET_RCV_CLEAR_INTERRUPT,
 			ETH_SOCKET_RCV_WAIT_CLEAR_INTERRUPT,
 			ETH_SOCKET_RCV_FINISHED,
-			//	DISCONNECT SOCKET
+			//	DISCONNECT SOCKET ( TCP )
 			ETH_SOCKET_DISCONNECT_WRITE_COMMAND,
 			ETH_SOCKET_DISCONNECT_WAIT_WRITE_COMMAND,
 			ETH_SOCKET_DISCONNECT_CHECK_STATUS,
 			ETH_SOCKET_DISCONNECT_FINISHED,
-			//	CLOSE SOCKET
+			//	CLOSE SOCKET ( TCP & UDP )
+			ETH_SOCKET_CLOSE_CLEAR_INTERRUPT,
+			ETH_SOCKET_CLOSE_WAIT_CLEAR_INTERRUPT,
 			ETH_SOCKET_CLOSE_WRITE_COMMAND,
 			ETH_SOCKET_CLOSE_WAIT_WRITE_COMMAND,
 			ETH_SOCKET_CLOSE_CHECK_STATUS,
@@ -304,6 +313,7 @@ class Eth : public SpiSlave{
 		//	---------------	SOCKETS	---------------
 		ethState_t m_ethState;
 		ethErrorStat_t m_ethError;
+		ethState_t m_ethStateWhenLastError;
 		socketMode_t m_socketMode;
 
 		SysTimer m_timeoutTimer;	//	To avoid blocking states
@@ -348,6 +358,13 @@ class Eth : public SpiSlave{
 
 		//	---------------	UDP	---------------
 		bool m_destinationSetFlag;
+
+		uint8_t m_headerUDP[8];
+		static const uint8_t UDP_HEADER_LEN = 8;
+
+		uint8_t m_udpRcvRemoteIP[4];
+		uint8_t m_udpRcvRemotePort[2];
+		uint16_t m_udpPayloadLen;
 
 		//	-----------------------------------
 
@@ -395,21 +412,23 @@ class Eth : public SpiSlave{
 		socketStat_t socketStatus() const;		//	Returns Socket Status
 		bool isReady() const;					//	Return true if eth can make an operation
 		ethErrorStat_t currentError() const;	//	Returns Socket Current Error Stat
+		ethState_t stateWhenLastError() const;	//	Returns Eth State in which ocurred last error
 
 		void socketOpen(socketMode_t sockMode, uint16_t localPort);		//	Opens Socket, TCP / UDP Socket Mode
 		bool socketOpened() const;										//	Returns True if Socket is Opened
-		void socketConnect(uint8_t remoteIP[4], uint16_t remotePort);	//	Connects Socket
-		bool socketConnected() const;									//	Returns True if Socket is Connected
-		void socketSetDestUDP(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
-		bool socketDestSetUDP() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
-		void socketSendTCP(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, TCP Socket Mode
+		void socketTCPconnect(uint8_t remoteIP[4], uint16_t remotePort);//	Connects Socket, TCP Socket Mode
+		bool socketTCPconnected() const;								//	Returns True if TCP Socket is Connected
+		void socketUDPsetDest(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
+		bool socketUDPdestSet() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
+		void socketTCPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, TCP Socket Mode
+		void socketUDPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode
 		bool socketSendFinished() const;								//	Returns True if Data was sent to Server
-		void socketSendUDP(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode
-		void socketReceive(uint8_t *buffer, uint16_t maxLen);			//	Receives Data from Server
+		void socketTCPreceive(uint8_t *buffer, uint16_t maxLen);		//	Receives Data from Server, TCP Socket Mode
+		void socketUDPreceive(uint8_t *buffer, uint16_t maxLen);		//	Receives Data from Server, UDP Socket Mode
 		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
 		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server
-		void socketDisconnect();										//	Disconnects Socket
-		bool socketDisconnectFinished() const;							//	Returns True if Socket was Disconnected
+		void socketTCPdisconnect();										//	Disconnects Socket, TCP Socket Mode
+		bool socketTCPdisconnectFinished() const;						//	Returns True if TCP Socket was Disconnected
 		void socketClose();												//	Closes Socket
 		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
 

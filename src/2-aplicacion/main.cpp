@@ -61,38 +61,38 @@ int main(void) {
     	if(eth.socketOpened() && !f_connectStarted){
     		uint8_t serverIP[4] = {192, 168, 0, 7};
 
-    		eth.socketConnect(serverIP, 5000);
+    		eth.socketTCPconnect(serverIP, 5000);
 
     		f_connectStarted = true;
     	}
 
-    	if(eth.socketConnected()){
+    	if(eth.socketTCPconnected()){
     		if(!f_sendStarted){
-    			eth.socketSendTCP(txMsg2, (sizeof(txMsg2) - 1));
+    			eth.socketTCPsend(txMsg2, (sizeof(txMsg2) - 1));
     			f_sendStarted = true;
     		}
         	if(eth.socketSendFinished() && !f_receiveStarted){
-    			eth.socketReceive(rxMsg, (sizeof(rxMsg)));
+    			eth.socketTCPreceive(rxMsg, (sizeof(rxMsg)));
     			f_receiveStarted = true;
         	}
         	if(eth.socketReceiveFinished() && eth.socketSendFinished()){
         		f_sendStarted = false;
         		f_receiveStarted = false;
         		static uint16_t i = 0;
-        		i++;
-        		if(i >= 1000){
+        		i++;	//	BREAKPOINT
+        		if(i >= 10){
         			i = 0;
         			static uint8_t j = 0;
         			j++;
         			if(j >= 100){
         				j = 0;
-        				eth.socketDisconnect();
+        				eth.socketTCPdisconnect();
         				f_closeStarted = true;
         			}
         		}
         	}
     	}
-        if(f_closeStarted && eth.socketDisconnectFinished()){
+        if(f_closeStarted && eth.socketTCPdisconnectFinished()){
         	f_closeStarted = false;
         	f_openStarted = false;
         	f_connectStarted = false;
