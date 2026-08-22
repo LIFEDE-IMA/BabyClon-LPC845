@@ -35,6 +35,8 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_w5500WrapAroundFlag = false;
 	m_w5500BufferSize = m_w5500BufferMask = m_rxBufferSize = m_rxBufferMask = m_txBufferSize = m_txBufferMask = 0;
 	m_sendBuffer = nullptr;
+	m_dhcpState = dhcpState_t::DHCP_IDLE;
+	m_dhcpFinishedFlag = false;
 	m_currentConfigStat = configState_t::CONFIG_NONE;
 	m_socketStat = socketStat_t::SOCK_CLOSED;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
@@ -280,18 +282,19 @@ bool Eth::readMAC(uint8_t mac[6], opMode_t opMode){
 	return Eth::readBufferAndWait(registerAddr_t::SHAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, mac, 6, opMode);
 }
 
-void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketBufferSize_t rxBufferSize, socketBufferSize_t txBufferSize, socketCloseMode_t closeMode,opMode_t opMode){
+
+
+void Eth::init(uint8_t mac[6], socketBufferSize_t rxBufferSize,
+		  	   socketBufferSize_t txBufferSize, socketCloseMode_t closeMode,
+			   opMode_t opMode){
+
 	if(Eth::isBusy())
 		return;
 
+	m_initConfigMode = initConfigMode_t::INIT_WITH_DHCP;
 	m_socketCloseMode = closeMode;
 	m_opMode = opMode;
 
-	for(uint8_t i = 0; i < 4; i++){
-		 m_ip[i] = ip[i];
-		 m_gateway[i] = gateway[i];
-		 m_subnet[i] = subnet[i];
-	}
 	for(uint8_t i = 0; i < 6; i++)	m_mac[i] = mac[i];
 
 	m_rxBufferSize = (uint16_t)(rxBufferSize * 1024);
@@ -301,7 +304,41 @@ void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac
 	m_txBufferMask = m_txBufferSize - 1;
 
 	m_initFinishedFlag = false;
-	m_currentConfigStat = configState_t::CONFIG_IP;
+	m_dhcpState = dhcpState_t::DHCP_IDLE;
+	m_currentConfigStat = configState_t::CONFIG_MAC;
+	m_ethError = ethErrorStat_t::ERROR_NONE;
+	m_ethState = ethState_t::ETH_CONFIG_WRITE;
+	m_ethStateWhenLastError = ethState_t::ETH_IDLE;
+}
+
+void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6],
+		  	   socketBufferSize_t rxBufferSize, socketBufferSize_t txBufferSize,
+			   socketCloseMode_t closeMode, opMode_t opMode){
+
+	if(Eth::isBusy())
+		return;
+
+	m_initConfigMode = initConfigMode_t::INIT_WITH_STATIC_IP;
+	m_socketCloseMode = closeMode;
+	m_opMode = opMode;
+
+	for(uint8_t i = 0; i < 4; i++){
+		m_ip[i] = ip[i];
+		m_gateway[i] = gateway[i];
+		m_subnet[i] = subnet[i];
+	}
+
+	for(uint8_t i = 0; i < 6; i++)	m_mac[i] = mac[i];
+
+	m_rxBufferSize = (uint16_t)(rxBufferSize * 1024);
+	m_rxBufferMask = m_rxBufferSize - 1;
+
+	m_txBufferSize = (uint16_t)(txBufferSize * 1024);
+	m_txBufferMask = m_txBufferSize - 1;
+
+	m_initFinishedFlag = false;
+	m_dhcpState = dhcpState_t::DHCP_IDLE;
+	m_currentConfigStat = configState_t::CONFIG_MAC;
 	m_ethError = ethErrorStat_t::ERROR_NONE;
 	m_ethState = ethState_t::ETH_CONFIG_WRITE;
 	m_ethStateWhenLastError = ethState_t::ETH_IDLE;
@@ -550,6 +587,572 @@ bool Eth::socketCloseFinished() const{
 	return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_CLOSED));
 }
 
+void Eth::DHCPgenerateXid() {
+	uint32_t xID = 0;
+
+	//	Generates Random Number as Unique Transaction ID
+	xID ^= (m_mac[0] << 24);
+	xID ^= (m_mac[1] << 16);
+	xID ^= (m_mac[2] << 8);
+	xID ^= (m_mac[3] << 0);
+	xID ^= (m_mac[4] << 8);
+	xID ^= (m_mac[5] << 0);
+	xID ^= SysTimer::randomTick;
+
+	m_dhcpTransactionID[0] = (uint8_t)(xID >> 24);
+	m_dhcpTransactionID[1] = (uint8_t)(xID >> 16);
+	m_dhcpTransactionID[2] = (uint8_t)(xID >> 8);
+	m_dhcpTransactionID[3] = (uint8_t)(xID >> 0);
+}
+
+void Eth::DHCPstart(){
+	if(m_ethState != ethState_t::ETH_DHCP_START)
+		return;
+
+	if(m_timeoutTimer.isRunning())
+		m_timeoutTimer.stopTimer();
+
+	m_dhcpInProgressFlag = true;
+	m_dhcpOptionErrorFlag = false;
+	m_dhcpOptionNACKfound = false;
+	m_dhcpFinishedFlag = false;
+	m_dhcpRxLen = 0;
+	m_dhcpTxLen = 0;
+	m_dhcpRetryCount = 0;
+	m_dhcpLeaseTime = 0;
+
+	Eth::DHCPgenerateXid();
+
+	for(uint8_t i = 0; i < 4; i++){
+		m_ip[i] = 0;
+		m_subnet[i] = 0;
+		m_gateway[i] = 0;
+		m_dhcpOfferedIP[i] = 0;
+		m_dhcpServerIP[i] = 0;
+		m_dhcpDNS[i] = 0;
+		m_remoteIPBuffer[i] = 255;
+	}
+
+	m_localPortBuffer[0] = 0;
+	m_localPortBuffer[1] = DHCP_CLIENT_PORT;
+	m_remotePortBuffer[0] = 0;
+	m_remotePortBuffer[1] = DHCP_SERVER_PORT;
+
+	m_socketMode = socketMode_t::UDP_MODE;
+	m_dhcpState = dhcpState_t::DHCP_START;
+}
+
+void Eth::DHCPbuildDiscover(){
+	uint16_t index = 0;
+
+	//	BOOTP HEADER
+	m_dhcpTxBuffer[index++] = DHCP_OP_BOOT_REQUEST;
+	m_dhcpTxBuffer[index++] = DHCP_HTYPE_ETHERNET;
+	m_dhcpTxBuffer[index++] = DHCP_HLEN_ETHERNET;
+	m_dhcpTxBuffer[index++] = 0;	//	Hops
+
+	//	X_ID	transaction id
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[0];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[1];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[2];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[3];
+
+	//	SECONDS ELAPSED
+	m_dhcpTxBuffer[index++] = 0;
+	m_dhcpTxBuffer[index++] = 0;
+
+	//	BROADCAST FLAGS
+	m_dhcpTxBuffer[index++] = 0x80;
+	m_dhcpTxBuffer[index++] = 0x00;
+
+	//	CI_ADDR		client ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	YI_ADDR		your ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	SI_ADDR		server ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	GI_ADDR		gateway ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	CHA_ADDR	client hardware address
+	for(uint8_t i = 0; i < 6; i++)	m_dhcpTxBuffer[index++] = m_mac[i];
+
+	//	remaining CHA_ADDR
+	for(uint8_t i = 0; i < 10; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	SNAME		server hostname
+	for(uint8_t i = 0; i < 64; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	FILE
+	for(uint8_t i = 0; i < 128; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	DHCP MAGIC COOKIE
+	m_dhcpTxBuffer[index++] = 99;
+	m_dhcpTxBuffer[index++] = 130;
+	m_dhcpTxBuffer[index++] = 83;
+	m_dhcpTxBuffer[index++] = 99;
+
+	//	OPTION 53 - DHCP Message Type
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_MESSAGE_TYPE;
+	m_dhcpTxBuffer[index++] = 1;
+	m_dhcpTxBuffer[index++] = DHCP_DISCOVER;
+
+	//	OPTION 55 - DHCP Parameter Request List
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_PARAMETER_REQUEST;
+	m_dhcpTxBuffer[index++] = 3;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_SUBNET_MASK;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_ROUTER;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_DNS;
+
+	//	OPTION 61 - Client Identifier
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_CLIENT_IDENTIFIER;
+	m_dhcpTxBuffer[index++] = 7;
+	m_dhcpTxBuffer[index++] = 1;	//	Ethernet
+	for(uint8_t i = 0; i < 6; i++)	m_dhcpTxBuffer[index++] = m_mac[i];
+
+	//	END
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_END;
+
+	m_dhcpTxLen = index;
+
+	m_sendBuffer = m_dhcpTxBuffer;
+	m_sendLen = m_dhcpTxLen;
+	m_sendProcessedLen = 0;
+	m_sendCurrentLen = 0;
+	m_sendRemainingLen = 0;
+	m_sendFinishedFlag = false;
+
+	m_dhcpState = dhcpState_t::DHCP_BUILD_DISCOVER;
+}
+
+void Eth::DHCPwaitOffer(){
+	m_rcvBuffer = m_dhcpRxBuffer;
+	m_usrAskedRcvLen = DHCP_BUFFER_LEN;
+	m_actualRcvLen = 0;
+	m_udpPayloadLen = 0;
+	m_rcvFinishedFlag = false;
+	for(uint8_t i = 0; i < Eth::UDP_HEADER_LEN; i++) m_headerUDP[i] = 0;
+	for(uint8_t i = 0; i < 4; i++) m_udpRcvRemoteIP[i] = 0;
+	for(uint8_t i = 0; i < 2; i++) m_udpRcvRemotePort[i] = 0;
+
+	m_dhcpState = dhcpState_t::DHCP_WAIT_OFFER;
+}
+
+bool Eth::DHCPparseOffer(){
+	m_dhcpState = dhcpState_t::DHCP_PARSE_OFFER;
+
+	if(m_dhcpRxLen < (DHCP_FIXED_HEADER_LEN + DHCP_MAGIC_COOKIE_LEN))
+		return false;
+
+	m_dhcpCurrentRxIndex = 0;
+
+	//	OP
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_OP_BOOT_REPLY)
+		return false;
+
+	//	HTYPE
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_HTYPE_ETHERNET)
+		return false;
+
+	//	HLEN
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_HLEN_ETHERNET)
+		return false;
+
+	//	HOPS
+	m_dhcpCurrentRxIndex++;
+
+	//	XID
+	for(uint8_t i = 0; i < 4; i++){
+		if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != m_dhcpTransactionID[i])
+			return false;
+	}
+
+	//	SECS
+	m_dhcpCurrentRxIndex += 2;
+
+	//	FLAGS
+	m_dhcpCurrentRxIndex += 2;
+
+	//	CIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	YIADDR
+	for(uint8_t i = 0; i < 4; i++)
+		m_dhcpOfferedIP[i] = m_dhcpRxBuffer[m_dhcpCurrentRxIndex++];	//	This gonna be our m_ip
+
+	//	SIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	GIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	CHADDR
+	for(uint8_t i = 0; i < 6; i++){
+		if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != m_mac[i])
+			return false;
+	}
+
+	//	REMAINING CHADDR
+	m_dhcpCurrentRxIndex += 10;
+
+	//	SNAME
+	m_dhcpCurrentRxIndex += 64;
+
+	//	FILE
+	m_dhcpCurrentRxIndex += 128;
+
+	//	MAGIC COOKIE
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 99)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 130)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 83)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 99)
+		return false;
+
+	m_dhcpMsgTypeFound_flag = false;
+	m_dhcpServerIpFound_flag = false;
+	m_dhcpSubnetFound_flag = false;
+	m_dhcpGatewayFound_flag = false;
+	m_dhcpDnsFound_flag = false;
+
+	m_dhcpOptionErrorFlag = false;
+
+	return true;
+}
+
+void Eth::DHCPvalidateOption(uint8_t expectedMsgType, ethState_t nextStateIfOptionOK){
+	if(m_dhcpCurrentRxIndex >= m_dhcpRxLen){
+		m_ethState = nextStateIfOptionOK;
+		return;
+	}
+
+	//	DHCP OPTIONS
+
+/*	+--------+--------+-------------------+
+	|  CODE  | LENGTH |       DATA        |
+	+--------+--------+-------------------+
+	  1 byte   1 byte      LENGTH bytes
+*/
+
+	uint8_t option = m_dhcpRxBuffer[m_dhcpCurrentRxIndex++];
+
+	if(option == DHCP_OPTION_PAD)
+		return;	//	Nothing To do
+
+	if(option == DHCP_OPTION_END){
+		m_ethState = nextStateIfOptionOK;
+		return;
+	}
+
+	if(m_dhcpCurrentRxIndex >= m_dhcpRxLen){	//	Need more length
+		m_dhcpOptionErrorFlag = true;
+		return;
+	}
+
+	uint8_t optionLen = m_dhcpRxBuffer[m_dhcpCurrentRxIndex++];
+
+	if((m_dhcpCurrentRxIndex + optionLen) > m_dhcpRxLen){
+		m_dhcpOptionErrorFlag = true;
+		return;
+	}
+
+	bool f_valid = true;
+
+	switch(option){
+		case DHCP_OPTION_MESSAGE_TYPE:
+			if(optionLen != 1){
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}else if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex] == DHCP_NACK){
+				m_dhcpOptionNACKfound = true;
+			}else if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex] == expectedMsgType){
+				m_dhcpMsgTypeFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}
+			break;
+
+		case DHCP_OPTION_SERVER_IDENTIFIER:
+			if(optionLen == 4){
+				for(uint8_t i = 0; i < 4; i++)
+					m_dhcpServerIP[i] = m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + i)];
+
+				m_dhcpServerIpFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}
+			break;
+
+		case DHCP_OPTION_SUBNET_MASK:
+			if(optionLen == 4){
+				for(uint8_t i = 0; i < 4; i++)
+					m_subnet[i] = m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + i)];	//	If offered, this is our subnet
+
+				m_dhcpSubnetFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;;
+			}
+			break;
+
+		case DHCP_OPTION_ROUTER:
+			if(optionLen >= 4){
+				for(uint8_t i = 0; i < 4; i++)
+					m_gateway[i] = m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + i)];	//	If offered, this is our gateway
+
+				m_dhcpGatewayFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}
+			break;
+
+		case DHCP_OPTION_DNS:
+			if(optionLen >= 4){
+				for(uint8_t i = 0; i < 4; i++)
+					m_dhcpDNS[i] = m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + i)];
+
+				m_dhcpDnsFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}
+			break;
+
+		case DHCP_OPTION_LEASE_TIME:
+			if(optionLen == 4){
+				m_dhcpLeaseTime = ((uint32_t)(m_dhcpRxBuffer[m_dhcpCurrentRxIndex]) << 24) 	     |
+								  ((uint32_t)(m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + 1)]) << 16) |
+								  ((uint32_t)(m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + 2)]) << 8)  |
+								  ((uint32_t)(m_dhcpRxBuffer[(m_dhcpCurrentRxIndex + 3)]) << 0);
+
+				m_dhcpLeaseTimeFound_flag = true;
+			}else{
+				m_dhcpOptionErrorFlag = true;
+				f_valid = false;
+			}
+			break;
+
+		default:
+			//	Not interested in this DHCP option
+			break;
+	}
+
+	if(f_valid)
+		m_dhcpCurrentRxIndex += optionLen;
+}
+
+void Eth::DHCPbuildRequest(){
+	uint16_t index = 0;
+
+	//	BOOTP HEADER
+	m_dhcpTxBuffer[index++] = DHCP_OP_BOOT_REQUEST;
+	m_dhcpTxBuffer[index++] = DHCP_HTYPE_ETHERNET;
+	m_dhcpTxBuffer[index++] = DHCP_HLEN_ETHERNET;
+	m_dhcpTxBuffer[index++] = 0;	//	Hops
+
+	//	X_ID	transaction id
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[0];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[1];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[2];
+	m_dhcpTxBuffer[index++] = m_dhcpTransactionID[3];
+
+	//	SECONDS ELAPSED
+	m_dhcpTxBuffer[index++] = 0;
+	m_dhcpTxBuffer[index++] = 0;
+
+	//	BROADCAST FLAGS
+	m_dhcpTxBuffer[index++] = 0x80;
+	m_dhcpTxBuffer[index++] = 0x00;
+
+	//	CI_ADDR		client ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	YI_ADDR		your ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	SI_ADDR		server ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	GI_ADDR		gateway ip address
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	CHA_ADDR	client hardware address
+	for(uint8_t i = 0; i < 6; i++)	m_dhcpTxBuffer[index++] = m_mac[i];
+
+	//	remaining CHA_ADDR
+	for(uint8_t i = 0; i < 10; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	SNAME		server hostname
+	for(uint8_t i = 0; i < 64; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	FILE
+	for(uint8_t i = 0; i < 128; i++)	m_dhcpTxBuffer[index++] = 0;
+
+	//	DHCP MAGIC COOKIE
+	m_dhcpTxBuffer[index++] = 99;
+	m_dhcpTxBuffer[index++] = 130;
+	m_dhcpTxBuffer[index++] = 83;
+	m_dhcpTxBuffer[index++] = 99;
+
+	//	OPTION 53 - DHCP Message Type
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_MESSAGE_TYPE;
+	m_dhcpTxBuffer[index++] = 1;
+	m_dhcpTxBuffer[index++] = DHCP_REQUEST;
+
+	//	OPTION 50 - DHCP Requested IP Address
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_REQUESTED_IP;
+	m_dhcpTxBuffer[index++] = 4;
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = m_dhcpOfferedIP[i];
+
+	//	OPTION 54 - DHCP Server Identifier
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_SERVER_IDENTIFIER;
+	m_dhcpTxBuffer[index++] = 4;
+	for(uint8_t i = 0; i < 4; i++)	m_dhcpTxBuffer[index++] = m_dhcpServerIP[i];
+
+	//	OPTION 55 - DHCP Parameter Request List
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_PARAMETER_REQUEST;
+	m_dhcpTxBuffer[index++] = 3;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_SUBNET_MASK;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_ROUTER;
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_DNS;
+
+	//	OPTION 61 - Client Identifier
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_CLIENT_IDENTIFIER;
+	m_dhcpTxBuffer[index++] = 7;
+	m_dhcpTxBuffer[index++] = 1;	//	Ethernet
+	for(uint8_t i = 0; i < 6; i++)	m_dhcpTxBuffer[index++] = m_mac[i];
+
+	//	END
+	m_dhcpTxBuffer[index++] = DHCP_OPTION_END;
+
+	m_dhcpTxLen = index;
+
+	m_sendBuffer = m_dhcpTxBuffer;
+	m_sendLen = m_dhcpTxLen;
+	m_sendProcessedLen = 0;
+	m_sendCurrentLen = 0;
+	m_sendRemainingLen = 0;
+	m_sendFinishedFlag = false;
+
+	m_dhcpState = dhcpState_t::DHCP_BUILD_REQUEST;
+}
+
+void Eth::DHCPwaitACK(){
+	m_rcvBuffer = m_dhcpRxBuffer;
+	m_usrAskedRcvLen = DHCP_BUFFER_LEN;
+	m_actualRcvLen = 0;
+	m_udpPayloadLen = 0;
+	m_rcvFinishedFlag = false;
+
+	m_dhcpState = dhcpState_t::DHCP_WAIT_ACK;
+
+	for(uint8_t i = 0; i < Eth::UDP_HEADER_LEN; i++) m_headerUDP[i] = 0;
+	for(uint8_t i = 0; i < 4; i++) m_udpRcvRemoteIP[i] = 0;
+	for(uint8_t i = 0; i < 2; i++) m_udpRcvRemotePort[i] = 0;
+}
+
+bool Eth::DHCPparseACK(){
+	m_dhcpState = dhcpState_t::DHCP_PARSE_ACK;
+
+	if(m_dhcpRxLen < (DHCP_FIXED_HEADER_LEN + DHCP_MAGIC_COOKIE_LEN))
+		return false;
+
+	m_dhcpCurrentRxIndex = 0;
+
+	//	OP
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_OP_BOOT_REPLY)
+		return false;
+
+	//	HTYPE
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_HTYPE_ETHERNET)
+		return false;
+
+	//	HLEN
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != DHCP_HLEN_ETHERNET)
+		return false;
+
+	//	HOPS
+	m_dhcpCurrentRxIndex++;
+
+	//	XID
+	for(uint8_t i = 0; i < 4; i++){
+		if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != m_dhcpTransactionID[i])
+			return false;
+	}
+
+	//	SECS
+	m_dhcpCurrentRxIndex += 2;
+
+	//	FLAGS
+	m_dhcpCurrentRxIndex += 2;
+
+	//	CIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	YIADDR
+	for(uint8_t i = 0; i < 4; i++)
+		m_dhcpOfferedIP[i] = m_dhcpRxBuffer[m_dhcpCurrentRxIndex++];
+
+	//	SIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	GIADDR
+	m_dhcpCurrentRxIndex += 4;
+
+	//	CHADDR
+	for(uint8_t i = 0; i < 6; i++){
+		if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != m_mac[i])
+			return false;
+	}
+
+	//	REMAINING CHADDR
+	m_dhcpCurrentRxIndex += 10;
+
+	//	SNAME
+	m_dhcpCurrentRxIndex += 64;
+
+	//	FILE
+	m_dhcpCurrentRxIndex += 128;
+
+	//	MAGIC COOKIE
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 99)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 130)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 83)
+		return false;
+
+	if(m_dhcpRxBuffer[m_dhcpCurrentRxIndex++] != 99)
+		return false;
+
+	m_dhcpMsgTypeFound_flag = false;
+	m_dhcpServerIpFound_flag = false;
+	m_dhcpSubnetFound_flag = false;
+	m_dhcpGatewayFound_flag = false;
+	m_dhcpDnsFound_flag = false;
+	m_dhcpLeaseTimeFound_flag = false;
+
+	m_dhcpOptionErrorFlag = false;
+	m_dhcpOptionNACKfound = false;
+
+	return true;
+}
+
+bool Eth::DHCPfinished() const{ return m_dhcpFinishedFlag; }
+
 void Eth::handler(){
 
 	//	Finished a single SPI transfer (single packet)
@@ -658,18 +1261,6 @@ void Eth::handler(){
 			m_socketTransferDone = false;
 
 			switch(m_currentConfigStat){
-				case configState_t::CONFIG_IP:
-					Eth::writeBuffer(registerAddr_t::SIPR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_ip, 4, &m_socketTransferDone);
-					break;
-
-				case configState_t::CONFIG_GATEWAY:
-					Eth::writeBuffer(registerAddr_t::GAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_gateway, 4, &m_socketTransferDone);
-					break;
-
-				case configState_t::CONFIG_SUBNET:
-					Eth::writeBuffer(registerAddr_t::SUBR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_subnet, 4, &m_socketTransferDone);
-					break;
-
 				case configState_t::CONFIG_MAC:
 					Eth::writeBuffer(registerAddr_t::SHAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_mac, 6, &m_socketTransferDone);
 					break;
@@ -680,6 +1271,18 @@ void Eth::handler(){
 
 				case configState_t::CONFIG_TX_BUFFER_SIZE:
 					Eth::writeByte(registerAddr_t::Sn_TXBUF_SIZE_REGISTER, block_t::SOCKET0_REGISTER_BLOCK, (uint8_t)(m_txBufferSize / 1024), &m_socketTransferDone);
+					break;
+
+				case configState_t::CONFIG_IP:
+					Eth::writeBuffer(registerAddr_t::SIPR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_ip, 4, &m_socketTransferDone);
+					break;
+
+				case configState_t::CONFIG_GATEWAY:
+					Eth::writeBuffer(registerAddr_t::GAR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_gateway, 4, &m_socketTransferDone);
+					break;
+
+				case configState_t::CONFIG_SUBNET:
+					Eth::writeBuffer(registerAddr_t::SUBR0_REGISTER, block_t::COMMON_REGISTER_BLOCK, m_subnet, 4, &m_socketTransferDone);
 					break;
 
 				default:
@@ -699,21 +1302,6 @@ void Eth::handler(){
 
 		case ethState_t::ETH_CONFIG_NEXT:
 			switch(m_currentConfigStat){
-				case configState_t::CONFIG_IP:
-					m_currentConfigStat = configState_t::CONFIG_GATEWAY;
-					m_ethState = ethState_t::ETH_CONFIG_WRITE;
-					break;
-
-				case configState_t::CONFIG_GATEWAY:
-					m_currentConfigStat = configState_t::CONFIG_SUBNET;
-					m_ethState = ethState_t::ETH_CONFIG_WRITE;
-					break;
-
-				case configState_t::CONFIG_SUBNET:
-					m_currentConfigStat = configState_t::CONFIG_MAC;
-					m_ethState = ethState_t::ETH_CONFIG_WRITE;
-					break;
-
 				case configState_t::CONFIG_MAC:
 					m_currentConfigStat = configState_t::CONFIG_RX_BUFFER_SIZE;
 					m_ethState = ethState_t::ETH_CONFIG_WRITE;
@@ -725,6 +1313,24 @@ void Eth::handler(){
 					break;
 
 				case configState_t::CONFIG_TX_BUFFER_SIZE:
+					m_currentConfigStat = configState_t::CONFIG_IP;
+					if(m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)
+						m_ethState = ethState_t::ETH_DHCP_START;
+					else if(m_initConfigMode == initConfigMode_t::INIT_WITH_STATIC_IP)
+						m_ethState = ethState_t::ETH_CONFIG_WRITE;
+					break;
+
+				case configState_t::CONFIG_IP:
+					m_currentConfigStat = configState_t::CONFIG_GATEWAY;
+					m_ethState = ethState_t::ETH_CONFIG_WRITE;
+					break;
+
+				case configState_t::CONFIG_GATEWAY:
+					m_currentConfigStat = configState_t::CONFIG_SUBNET;
+					m_ethState = ethState_t::ETH_CONFIG_WRITE;
+					break;
+
+				case configState_t::CONFIG_SUBNET:
 					m_currentConfigStat = configState_t::CONFIG_NONE;
 					m_ethState = ethState_t::ETH_CONFIG_FINISHED;
 					break;
@@ -735,9 +1341,96 @@ void Eth::handler(){
 			}
 			break;
 
+
 		case ethState_t::ETH_CONFIG_FINISHED:
 			m_initFinishedFlag = true;
 			m_ethState = ethState_t::ETH_IDLE;
+			break;
+
+
+		//	-------------------------	INIT DHCP CONFIG	-------------------------	//
+
+
+		case ethState_t::ETH_DHCP_START:
+			Eth::DHCPstart();
+			m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
+			break;
+
+		case ethState_t::ETH_DHCP_BUILD_DISCOVER:
+			Eth::DHCPbuildDiscover();
+			m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
+			break;
+
+		case ethState_t::ETH_DHCP_WAIT_OFFER:
+			Eth::DHCPwaitOffer();
+			m_ethState = ethState_t::ETH_SOCKET_RCV_READ_RX_RSR;
+			break;
+
+		case ethState_t::ETH_DHCP_PARSE_OFFER:
+			if(Eth::DHCPparseOffer()){
+				m_ethState = ethState_t::ETH_DHCP_VALIDATE_OPTIONS;
+			}else{
+				m_ethState = ethState_t::ETH_DHCP_WAIT_OFFER;
+			}
+			break;
+
+		case ethState_t::ETH_DHCP_VALIDATE_OPTIONS:
+			if(m_dhcpState == dhcpState_t::DHCP_PARSE_OFFER){
+				Eth::DHCPvalidateOption(DHCP_OFFER, ethState_t::ETH_DHCP_VALIDATE_OFFER);
+				if(m_dhcpOptionErrorFlag)	m_ethState = ethState_t::ETH_DHCP_WAIT_OFFER;
+
+			}else if(m_dhcpState == dhcpState_t::DHCP_PARSE_ACK){
+				Eth::DHCPvalidateOption(DHCP_ACK, ethState_t::ETH_DHCP_VALIDATE_ACK);
+				if(m_dhcpOptionErrorFlag)	m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;
+			}
+			break;
+
+		case ethState_t::ETH_DHCP_VALIDATE_OFFER:
+			if(!m_dhcpMsgTypeFound_flag || !m_dhcpServerIpFound_flag){
+				m_ethState = ethState_t::ETH_DHCP_WAIT_OFFER;	//	Subnet, gateway & DNS can be (or not) inside DHCPOFFER
+			}else{
+				m_ethState = ethState_t::ETH_DHCP_BUILD_REQUEST;
+			}
+			break;
+
+		case ethState_t::ETH_DHCP_BUILD_REQUEST:
+			Eth::DHCPbuildRequest();
+			m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
+			break;
+
+		case ethState_t::ETH_DHCP_WAIT_ACK:
+			Eth::DHCPwaitACK();
+			m_ethState = ethState_t::ETH_SOCKET_RCV_READ_RX_RSR;
+			break;
+
+		case ethState_t::ETH_DHCP_PARSE_ACK:
+			if(Eth::DHCPparseACK()){
+				m_ethState = ethState_t::ETH_DHCP_VALIDATE_OPTIONS;
+			}else{
+				m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;
+			}
+			break;
+
+		case ethState_t::ETH_DHCP_VALIDATE_ACK:
+			if(m_dhcpOptionNACKfound){	//	Server NACKed DHCPREQUEST
+				m_ethState = ethState_t::ETH_DHCP_START;	//	Re-start DHCP
+			}else if(!m_dhcpMsgTypeFound_flag   ||
+					 !m_dhcpLeaseTimeFound_flag ||
+					 !m_dhcpServerIpFound_flag	||
+					 !m_dhcpSubnetFound_flag){
+				m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;	//	Gateway & DNS can be (or not) inside DHCPACK
+			}else{
+				m_ethState = ethState_t::ETH_DHCP_FINISHED;
+			}
+			break;
+
+		case ethState_t::ETH_DHCP_FINISHED:
+			for(uint8_t i = 0; i < 4; i++) m_ip[i] = m_dhcpOfferedIP[i];
+			m_dhcpOptionErrorFlag = false;
+			m_dhcpInProgressFlag = false;
+			m_dhcpFinishedFlag = true;
+			m_dhcpState = dhcpState_t::DHCP_FINISHED;
+			m_ethState = ethState_t::ETH_CONFIG_WRITE;
 			break;
 
 
@@ -813,7 +1506,12 @@ void Eth::handler(){
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
 			}else if((m_socketMode == socketMode_t::UDP_MODE) && (m_socketStat == socketStat_t::SOCK_UDP)){	//	UDP MODE
 				m_timeoutTimer.stopTimer();
-				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
+				if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+					m_destinationSetFlag = false;
+					m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
+				}else{
+					m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
+				}
 			}else{
 				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_OPEN_CHECK_STATUS);
 			}
@@ -852,8 +1550,12 @@ void Eth::handler(){
 				if(m_socketMode == socketMode_t::TCP_MODE){
 					m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_COMMAND;
 				}else if(m_socketMode == socketMode_t::UDP_MODE){
-					m_destinationSetFlag = true;
-					m_ethState = ethState_t::ETH_SOCKET_CONNECT_FINISHED;
+					if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+						m_ethState = ethState_t::ETH_DHCP_BUILD_DISCOVER;
+					}else{
+						m_destinationSetFlag = true;
+						m_ethState = ethState_t::ETH_SOCKET_CONNECT_FINISHED;
+					}
 				}
 			}
 			break;
@@ -1055,7 +1757,14 @@ void Eth::handler(){
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
 			m_sendFinishedFlag = true;
-			m_ethState = ethState_t::ETH_IDLE;
+			if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+				if(m_dhcpState == dhcpState_t::DHCP_BUILD_DISCOVER)
+					m_ethState = ethState_t::ETH_DHCP_WAIT_OFFER;
+				else if(m_dhcpState == dhcpState_t::DHCP_BUILD_REQUEST)
+					m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;
+			}else{
+				m_ethState = ethState_t::ETH_IDLE;
+			}
 			break;
 
 
@@ -1072,7 +1781,17 @@ void Eth::handler(){
 
 		case ethState_t::ETH_SOCKET_RCV_WAIT_READ_RX_RSR:
 			if(m_timeoutTimer.singleTimerExpired()){
-				Eth::timeoutError();
+				if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+					m_dhcpRetryCount++;
+					if(m_dhcpRetryCount >= 5){
+						Eth::timeoutError();
+					}else{
+						m_timeoutTimer.stopTimer();
+						m_ethState = ethState_t::ETH_DHCP_BUILD_DISCOVER;
+					}
+				}else{
+					Eth::timeoutError();
+				}
 				break;
 			}
 			if(m_socketTransferDone){
@@ -1213,7 +1932,16 @@ void Eth::handler(){
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
 			m_rcvFinishedFlag = true;
-			m_ethState = ethState_t::ETH_IDLE;
+			if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+				m_dhcpRxLen = m_actualRcvLen;
+				m_dhcpCurrentRxIndex = 0;
+				if(m_dhcpState == dhcpState_t::DHCP_WAIT_OFFER)
+					m_ethState = ethState_t::ETH_DHCP_PARSE_OFFER;
+				else if(m_dhcpState == dhcpState_t::DHCP_WAIT_ACK)
+					m_ethState = ethState_t::ETH_DHCP_PARSE_ACK;
+			}else{
+				m_ethState = ethState_t::ETH_IDLE;
+			}
 			break;
 
 

@@ -27,6 +27,8 @@ class SysTimer : public TimedPeripheral{
 			T_MIN
 		};
 
+		static uint32_t randomTick;	//	Random value from 0 to 4.294.967.295
+
 	private:
 		uint32_t m_time;
 		uint32_t m_reload;

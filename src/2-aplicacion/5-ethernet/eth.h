@@ -16,6 +16,41 @@
 
 #define MAX_SPI_TRANSFER_LEN	128
 
+//	------------------	DHCP	------------------------	//
+
+#define DHCP_BUFFER_LEN			512
+#define DHCP_FIXED_HEADER_LEN	236
+#define	DHCP_MAGIC_COOKIE_LEN	4
+
+#define DHCP_CLIENT_PORT	68
+#define DHCP_SERVER_PORT	67
+
+#define DHCP_OP_BOOT_REQUEST	1
+#define	DHCP_OP_BOOT_REPLY		2
+
+#define DHCP_HTYPE_ETHERNET	1
+#define	DHCP_HLEN_ETHERNET	6
+
+#define	DHCP_DISCOVER	1
+#define DHCP_OFFER		2
+#define DHCP_REQUEST	3
+#define	DHCP_DECLINE	4
+#define	DHCP_ACK		5
+#define	DHCP_NACK		6
+
+#define DHCP_OPTION_PAD					0
+#define DHCP_OPTION_SUBNET_MASK			1
+#define DHCP_OPTION_ROUTER				3
+#define DHCP_OPTION_DNS					6
+#define DHCP_OPTION_REQUESTED_IP		50
+#define DHCP_OPTION_LEASE_TIME			51
+#define DHCP_OPTION_MESSAGE_TYPE		53
+#define DHCP_OPTION_SERVER_IDENTIFIER 	54
+#define DHCP_OPTION_PARAMETER_REQUEST	55
+#define DHCP_OPTION_CLIENT_IDENTIFIER	61
+#define DHCP_OPTION_END                	255
+
+
 class Eth : public SpiSlave{
 	public:
 		enum block_t : uint8_t{
@@ -96,14 +131,19 @@ class Eth : public SpiSlave{
 			VERSIONR_REGISTER = 0x0039	//	W5500 Chip Version Register (Common Register Block)
 		};
 
-		enum configState_t{
+		enum initConfigMode_t : uint8_t{
+			INIT_WITH_STATIC_IP,
+			INIT_WITH_DHCP
+		};
+
+		enum configState_t : uint8_t{
 			CONFIG_NONE,
-			CONFIG_IP,
-			CONFIG_GATEWAY,
-			CONFIG_SUBNET,
 			CONFIG_MAC,
 			CONFIG_RX_BUFFER_SIZE,
 			CONFIG_TX_BUFFER_SIZE,
+			CONFIG_IP,
+			CONFIG_GATEWAY,
+			CONFIG_SUBNET
 		};
 
 		enum opMode_t : uint8_t{
@@ -172,6 +212,18 @@ class Eth : public SpiSlave{
 			ETH_CONFIG_WAIT_WRITE,
 			ETH_CONFIG_NEXT,
 			ETH_CONFIG_FINISHED,
+			//	DHCP
+			ETH_DHCP_START,
+			ETH_DHCP_BUILD_DISCOVER,
+			ETH_DHCP_WAIT_OFFER,
+			ETH_DHCP_PARSE_OFFER,
+			ETH_DHCP_VALIDATE_OPTIONS,
+			ETH_DHCP_VALIDATE_OFFER,
+			ETH_DHCP_BUILD_REQUEST,
+			ETH_DHCP_WAIT_ACK,
+			ETH_DHCP_PARSE_ACK,
+			ETH_DHCP_VALIDATE_ACK,
+			ETH_DHCP_FINISHED,
 			//	READ SOCKET STATUS
 			ETH_SOCKET_STATUS_READ,
 			ETH_SOCKET_STATUS_WAIT_READ,
@@ -307,6 +359,7 @@ class Eth : public SpiSlave{
 		uint8_t m_mac[6];
 
 		opMode_t m_opMode;
+		initConfigMode_t m_initConfigMode;
 		configState_t m_currentConfigStat;
 		bool m_initFinishedFlag;
 
@@ -366,6 +419,51 @@ class Eth : public SpiSlave{
 		uint8_t m_udpRcvRemotePort[2];
 		uint16_t m_udpPayloadLen;
 
+		//	---------------		DCHP	---------------
+
+		enum dhcpState_t : uint8_t{
+			DHCP_IDLE,
+			DHCP_START,
+			DHCP_BUILD_DISCOVER,
+			DHCP_WAIT_OFFER,
+			DHCP_PARSE_OFFER,
+			DHCP_BUILD_REQUEST,
+			DHCP_WAIT_ACK,
+			DHCP_PARSE_ACK,
+			DHCP_FINISHED
+		};
+
+		dhcpState_t m_dhcpState;
+
+		uint8_t m_dhcpRxBuffer[DHCP_BUFFER_LEN];
+		uint8_t m_dhcpTxBuffer[DHCP_BUFFER_LEN];
+
+		uint16_t m_dhcpRxLen;
+		uint16_t m_dhcpTxLen;
+
+		uint8_t m_dhcpRetryCount;
+
+		uint8_t m_dhcpTransactionID[4];
+		uint8_t m_dhcpOfferedIP[4];
+		uint8_t m_dhcpServerIP[4];
+		uint8_t m_dhcpDNS[4];
+
+		uint16_t m_dhcpCurrentRxIndex;
+
+		uint32_t m_dhcpLeaseTime;
+
+		bool m_dhcpMsgTypeFound_flag;
+		bool m_dhcpServerIpFound_flag;
+		bool m_dhcpSubnetFound_flag;
+		bool m_dhcpGatewayFound_flag;
+		bool m_dhcpDnsFound_flag;
+		bool m_dhcpLeaseTimeFound_flag;
+
+		bool m_dhcpInProgressFlag;
+		bool m_dhcpOptionErrorFlag;
+		bool m_dhcpOptionNACKfound;
+		bool m_dhcpFinishedFlag;
+
 		//	-----------------------------------
 
 		void transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Makes ONE transfer of [ MAX_SPI_TRANSFER_LEN ] bytes
@@ -401,12 +499,32 @@ class Eth : public SpiSlave{
 
 		void socketRequestStatus(ethState_t nextStateAfterStatusRead);	//	Sets next state after status read
 
+		void DHCPgenerateXid();		//	Generates Transaction ID for DHCP
+		void DHCPstart();			//	Starts Dynamic Host Configuration Protocol (gets local IP, Subnet & Gateway)
+		void DHCPbuildDiscover();	//	Builds DHCPDISCOVER
+		void DHCPwaitOffer();		//	Starts UDP Socket Receive for DHCP offer
+		void DHCPvalidateOption(uint8_t expectedMsgType, ethState_t nextStateIfOptionOK);	//	Evaluates if DHCP Offer Option is OK
+		bool DHCPparseOffer();		//	Returns True if DHCP Offer is OK to build DHCPREQUEST
+		void DHCPbuildRequest();	//	Builds DHCPREQUEST
+		void DHCPwaitACK();			//	Prepares the driver before reading DHCP ACK/NACK
+		bool DHCPparseACK();		//	Returns True if DHCP ACK is OK so we can finish DHCP init
+		bool DHCPfinished() const;	//	Returns True when acquired IP, Subnet & Gateway
+
 		void timeoutError();	//	Handles ERROR_TIMEOUT
 
 	public:
 		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
 
-		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6], socketBufferSize_t rxBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketBufferSize_t txBufferSize = socketBufferSize_t::SOCKBUF_2KB, socketCloseMode_t closeMode = socketCloseMode_t::AUTO_CLOSE ,opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module
+		void init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac[6],
+				  socketBufferSize_t rxBufferSize = socketBufferSize_t::SOCKBUF_2KB,
+				  socketBufferSize_t txBufferSize = socketBufferSize_t::SOCKBUF_2KB,
+				  socketCloseMode_t closeMode = socketCloseMode_t::MANUAL_CLOSE,
+				  opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module with Static IP
+
+		void init(uint8_t mac[6], socketBufferSize_t rxBufferSize = socketBufferSize_t::SOCKBUF_2KB,
+				  socketBufferSize_t txBufferSize = socketBufferSize_t::SOCKBUF_2KB,
+				  socketCloseMode_t closeMode = socketCloseMode_t::MANUAL_CLOSE,
+				  opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module with DHCP
 
 		bool isLinkUp();						//	Returns True if Link is Up (Electrical Connection between W5500 and Router)
 		socketStat_t socketStatus() const;		//	Returns Socket Status
@@ -431,6 +549,7 @@ class Eth : public SpiSlave{
 		bool socketTCPdisconnectFinished() const;						//	Returns True if TCP Socket was Disconnected
 		void socketClose();												//	Closes Socket
 		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
+
 
 		void handler();			//	Non-blocking W5500 handler
 

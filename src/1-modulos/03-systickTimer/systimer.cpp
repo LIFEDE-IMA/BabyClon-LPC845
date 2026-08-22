@@ -10,6 +10,8 @@
 
 #include "systimer.h"
 
+uint32_t SysTimer::randomTick = 0;
+
 SysTimer::SysTimer(uint32_t time, shotType_t shot, timeBase_t base, void (*handler)(void)){	//	SYSCON (Cap. 8), SYSTICK (Cap. 25)
 	m_base = base;
 	SysTimer::baseToTicks(time);
@@ -67,9 +69,7 @@ bool SysTimer::singleTimerExpired(){
 	return false;
 }
 
-bool SysTimer::isRunning() const{
-	return (m_time != 0);
-}
+bool SysTimer::isRunning() const{ return (m_time != 0); }
 
 SysTimer& SysTimer::operator=(const uint32_t time){
 	SysTimer::stopTimer();
@@ -106,6 +106,8 @@ void SysTimer::handler(void){
 				m_time = m_reload;	//	m_reload * 1ms = 'm_reload' s
 		}
 	}
+	randomTick++;
+	randomTick %= 0xFFFFFFFF;
 }
 
 SysTimer::~SysTimer(){}
