@@ -37,6 +37,9 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_sendBuffer = nullptr;
 	m_dhcpState = dhcpState_t::DHCP_IDLE;
 	m_dhcpFinishedFlag = false;
+	m_dnsFinishedFlag = false;
+	m_dnsInProgressFlag = false;
+	m_dnsParseState = dnsParseState_t::DNS_PARSE_NONE;
 	m_currentConfigStat = configState_t::CONFIG_NONE;
 	m_socketStat = socketStat_t::SOCK_CLOSED;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
@@ -326,6 +329,7 @@ void Eth::init(uint8_t ip[4], uint8_t gateway[4], uint8_t subnet[4], uint8_t mac
 		m_ip[i] = ip[i];
 		m_gateway[i] = gateway[i];
 		m_subnet[i] = subnet[i];
+		m_dhcpDNS[i] = 0;
 	}
 
 	for(uint8_t i = 0; i < 6; i++)	m_mac[i] = mac[i];
@@ -423,6 +427,13 @@ void Eth::socketTCPconnect(uint8_t remoteIP[4], uint16_t remotePort){
 	m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
 }
 
+void Eth::socketTCPconnect(uint16_t remotePort){
+	if(!Eth::DNSresolveFinished())
+		return;
+
+	Eth::socketTCPconnect(m_dnsResolvedIP, remotePort);
+}
+
 bool Eth::socketTCPconnected() const{
 	return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_ESTABLISHED));
 }
@@ -444,6 +455,13 @@ void Eth::socketUDPsetDest(uint8_t remoteIP[4], uint16_t remotePort){
 
 	m_ethError = ethErrorStat_t::ERROR_NONE;
 	m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
+}
+
+void Eth::socketUDPsetDest(uint16_t remotePort){
+	if(!Eth::DNSresolveFinished())
+		return;
+
+	Eth::socketUDPsetDest(m_dnsResolvedIP, remotePort);
 }
 
 bool Eth::socketUDPdestSet() const{
@@ -1153,6 +1171,406 @@ bool Eth::DHCPparseACK(){
 
 bool Eth::DHCPfinished() const{ return m_dhcpFinishedFlag; }
 
+void Eth::DNSgenerateXid(){
+	m_dnsTransactionID = 0;
+
+	//	Generates Random Number as Unique Transaction ID
+	m_dnsTransactionID ^= (m_mac[0] << 8);
+	m_dnsTransactionID ^= (m_mac[1] << 0);
+	m_dnsTransactionID ^= (m_mac[4] << 8);
+	m_dnsTransactionID ^= (m_mac[5] << 0);
+	m_dnsTransactionID ^= (m_ip[0] << 8);
+	m_dnsTransactionID ^= (m_ip[3] << 0);
+	m_dnsTransactionID ^= SysTimer::randomTick;
+}
+
+void Eth::DNSresolve(const char *domain){
+	if(!Eth::isReady() || (domain == nullptr))
+		return;
+
+	if(m_timeoutTimer.isRunning())
+		m_timeoutTimer.stopTimer();
+
+	m_dnsInProgressFlag = true;
+	m_dnsFinishedFlag = false;
+	m_dnsQueryLen = 0;
+	m_dnsRxLen = 0;
+	m_dnsCurrentIndex = 0;
+
+	String::strcpy(m_dnsDomain, domain);
+
+	Eth::DNSgenerateXid();
+
+	uint8_t aux = 0;
+	for(uint8_t i = 0; i < 4; i++)	aux |= m_dhcpDNS[i];
+
+/*	DNS provided by DHCP is not working in W5500 (idk why???)
+ 	But this below should be working. Meanwhile, hardcoding Google's DNS
+
+ 	if(aux == 0)	//	If DNS was NOT in DHCPOFFER, we use google's 8.8.8.8
+		for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = 8;
+	else
+		for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = m_dhcpDNS[i];
+*/
+
+	//	Using Google's DNS (till I find why provided by DHCP isnt working)
+	for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = 8;
+
+	for(uint16_t i = 0; i < Eth::DNS_BUFFER_LEN; i++)	m_dnsQueryBuffer[i] = 0;
+
+	m_socketMode = socketMode_t::UDP_MODE;
+	m_dnsParseState = dnsParseState_t::DNS_PARSE_NONE;
+	m_ethError = ethErrorStat_t::ERROR_NONE;
+	m_ethState = ethState_t::ETH_DNS_BUILD_QUERY;
+}
+
+void Eth::DNSbuildQuery(){
+/*							DNS HEADER
+ 	+-------+-------+---------+---------+---------+---------+
+	|  XID  | FLAGS | QDCOUNT | ANCOUNT | NSCOUNT | ARCOUNT |
+	+-------+-------+---------+---------+---------+---------+
+	 2 bytes 2 bytes  2 bytes   2 bytes   2 bytes   2 bytes
+
+	 	 	QUESTION
+	+-------+-------+--------+
+	| QNAME | QTYPE | QCLASS |
+	+-------+-------+--------+
+	? bytes	 2 bytes  2 bytes
+*/
+
+	m_dnsCurrentIndex = 0;
+
+	//	---------------		HEADER		---------------	//
+	//	TRANSACTION ID
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = (m_dnsTransactionID >> 8);
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = (m_dnsTransactionID & 0xFF);
+
+	//	FLAGS
+	//	0x0100 = Standard query + recursion desired
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x01;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+
+	//	QDCOUNT = 1 (only 1 question in this packet)
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x01;
+
+	//	ANCOUNT = 0 (no answers yet)
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+
+	//	NSCOUNT = 0	(no authority packets)
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+
+	//	ARCOUNT = 0	(no additional records)
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+
+	//	---------------		QUESTION		---------------	//
+	//	QNAME
+	uint16_t queryIndex = m_dnsCurrentIndex++;
+	uint8_t labelLen = 0;
+	uint16_t domainLen = String::strlen(m_dnsDomain);
+
+	for(uint16_t i = 0; i < domainLen; i++){
+		char c = m_dnsDomain[i];
+
+		if((c == '.') || (c == '\0')){
+			m_dnsQueryBuffer[queryIndex] = labelLen;
+
+			queryIndex = m_dnsCurrentIndex++;
+			labelLen = 0;
+		}else{
+			m_dnsQueryBuffer[m_dnsCurrentIndex++] = (uint8_t)c;
+			labelLen++;
+			if(labelLen > 63)	//	Max len of labels is 63 chars
+				m_ethError = ethErrorStat_t::ERROR_DNS_INVALID_DOMAIN;
+		}
+	}
+	m_dnsQueryBuffer[queryIndex] = labelLen;
+
+	//	QNAME END
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+
+	//	QTYPE:	A = IPv4
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x01;
+
+	//	QCLASS: IN = Internet
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x00;
+	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x01;
+
+	m_dnsQueryLen = m_dnsCurrentIndex;
+}
+
+void Eth::DNSsetRemoteIPandPort(){
+	for(uint8_t i = 0; i < 4; i++)
+		m_remoteIPBuffer[i] = m_dnsServerIP[i];
+
+	m_remotePortBuffer[0] = (Eth::DNS_PORT >> 8);
+	m_remotePortBuffer[1] = (Eth::DNS_PORT & 0xFF);
+	m_destinationSetFlag = false;
+}
+
+void Eth::DNSwaitResponse(){
+	m_rcvBuffer = m_dnsRxBuffer;
+	m_usrAskedRcvLen = Eth::DNS_BUFFER_LEN;
+	m_actualRcvLen = 0;
+	m_udpPayloadLen = 0;
+	m_rcvFinishedFlag = false;
+
+	for(uint8_t i = 0; i < Eth::UDP_HEADER_LEN; i++) m_headerUDP[i] = 0;
+	for(uint8_t i = 0; i < 4; i++) m_udpRcvRemoteIP[i] = 0;
+	for(uint8_t i = 0; i < 2; i++) m_udpRcvRemotePort[i] = 0;
+}
+
+void Eth::DNSparseResponse(){
+	switch(m_dnsParseState){
+		case dnsParseState_t::DNS_PARSE_HEADER:
+			if(m_dnsRxLen >= 12){	//	Min DNS header len
+				//	XID
+				uint16_t xID = (((uint16_t)m_dnsRxBuffer[0] << 8) |
+								((uint16_t)m_dnsRxBuffer[1] << 0));
+
+				if(xID == m_dnsTransactionID){
+					uint16_t flags = (((uint16_t)m_dnsRxBuffer[2] << 8) |
+									  ((uint16_t)m_dnsRxBuffer[3] << 0));
+
+					//	FLAGS && RCODE
+					if(((flags & 0x8000) != 0) && ((flags & 0x000F) == 0)){	//	QR must be 1 (this is a response)
+							//	COUNTS
+						m_dnsQDcount = (((uint16_t)m_dnsRxBuffer[4] << 8) |
+										((uint16_t)m_dnsRxBuffer[5] << 0));
+
+						m_dnsANcount = (((uint16_t)m_dnsRxBuffer[6] << 8) |
+										((uint16_t)m_dnsRxBuffer[7] << 0));
+
+						if((m_dnsQDcount == 1) && (m_dnsANcount > 0)){	//	Only 1 question and at least one answer
+							m_dnsAnswRemaining = m_dnsANcount;
+							m_dnsCurrentIndex = 12;	//	NS and AR count discarted
+							m_dnsParseState = dnsParseState_t::DNS_PARSE_QUESTION_NAME;
+							break;	//	Out of case => next state
+						}
+					}
+				}
+			}
+			m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_QUESTION_NAME:
+			if(m_dnsCurrentIndex < m_dnsRxLen){
+				uint8_t nameByte = m_dnsRxBuffer[m_dnsCurrentIndex];
+
+				//	NAME finished
+				if(nameByte == 0x00){
+					m_dnsCurrentIndex++;
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_QUESTION_TYPE;
+					break;	//	Out of case => next state
+				}else if((nameByte & 0xC0) == 0xC0){	//	Compression pointer
+					if((m_dnsCurrentIndex + 1) < m_dnsRxLen){
+						//	Pointer has 2 bytes len
+						m_dnsCurrentIndex += 2;
+						m_dnsParseState = dnsParseState_t::DNS_PARSE_QUESTION_TYPE;
+						break;	//	Out of case => next state
+					}
+				}else if(nameByte <= 63){	//	Valid label
+					if((m_dnsCurrentIndex + 1 + nameByte) <= m_dnsRxLen){
+						m_dnsCurrentIndex += (1 + nameByte);	//	Skip label
+						break;	//	Out of case => next state
+					}
+				}
+			}
+			m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_QUESTION_TYPE:
+			//	QTYPE (2 bytes) + QCLASS (2 bytes)
+			if((m_dnsCurrentIndex + 4) <= m_dnsRxLen){
+				uint16_t qType = (((uint16_t)m_dnsRxBuffer[m_dnsCurrentIndex] << 8) |
+								  ((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 1)] << 0));
+
+				uint16_t qClass = (((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 2)] << 8) |
+								   ((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 3)] << 0));
+
+				m_dnsCurrentIndex += 4;
+
+				if((qType == 0x0001) && (qClass == 0x0001)){	//	Requested A / IN
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_ANSWER_NAME;
+					break;	//	Out of case => next state
+				}
+			}
+			m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_ANSWER_NAME:
+			if(m_dnsCurrentIndex < m_dnsRxLen){
+				uint8_t nameByte = m_dnsRxBuffer[m_dnsCurrentIndex];
+
+				//	NAME finished
+				if(nameByte == 0x00){
+					m_dnsCurrentIndex++;
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_ANSWER_FIXED;
+					break;	//	Out of case => next state
+				}else if((nameByte & 0xC0) == 0xC0){	//	Compression pointer
+					if((m_dnsCurrentIndex + 1) < m_dnsRxLen){
+						//	Pointer has 2 bytes len
+						m_dnsCurrentIndex += 2;
+						m_dnsParseState = dnsParseState_t::DNS_PARSE_ANSWER_FIXED;
+						break;	//	Out of case => next state
+					}
+				}else if(nameByte <= 63){	//	Valid label
+					if((m_dnsCurrentIndex + 1 + nameByte) <= m_dnsRxLen){
+						m_dnsCurrentIndex += (1 + nameByte);	//	Skip label
+						break;	//	Out of case => next state
+					}
+				}
+			}
+			m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_ANSWER_FIXED:
+			/*	Type: 		2 bytes
+			  	Class:		2 bytes
+			  	TTL:		4 bytes
+			  	RDLENGTH:	2 bytes
+			*/
+			if((m_dnsCurrentIndex + 10) <= m_dnsRxLen){
+				m_dnsAnswType = (((uint16_t)m_dnsRxBuffer[m_dnsCurrentIndex] << 8) |
+								 ((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 1)] << 0));
+
+				m_dnsAnswClass = (((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 2)] << 8) |
+								  ((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 3)] << 0));
+
+				//	Skip TTL (4 bytes)
+				m_dnsCurrentIndex += 8;
+
+				m_dnsAnswDataLen = (((uint16_t)m_dnsRxBuffer[m_dnsCurrentIndex] << 8) |
+									((uint16_t)m_dnsRxBuffer[(m_dnsCurrentIndex + 1)] << 0));
+
+				m_dnsCurrentIndex += 2;
+
+				//	Check RDATA exists
+				if((m_dnsCurrentIndex + m_dnsAnswDataLen) <= m_dnsRxLen){
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_ANSWER_DATA;
+					break;	//	Out of case => next state
+				}
+			}
+			m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_ANSWER_DATA:
+			/*	TYPE:		A
+			  	CLASS:		IN
+			  	RDLENGTH:	4
+			*/
+			if((m_dnsAnswType == 0x0001) && (m_dnsAnswClass == 0x0001) && (m_dnsAnswDataLen == 4)){
+				for(uint8_t i = 0; i < 4; i++)	m_dnsResolvedIP[i] = m_dnsRxBuffer[m_dnsCurrentIndex++];
+				m_dnsParseState = dnsParseState_t::DNS_PARSE_SUCCESS;
+			}else{	//	This was NOT an A record, skip RDATA and inspect next answ
+				m_dnsCurrentIndex += m_dnsAnswDataLen;
+
+				if(m_dnsAnswRemaining > 0)	m_dnsAnswRemaining--;
+
+				if(m_dnsAnswRemaining == 0){
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_ERROR;
+				}else{
+					m_dnsParseState = dnsParseState_t::DNS_PARSE_ANSWER_NAME;
+				}
+			}
+			break;
+
+		case dnsParseState_t::DNS_PARSE_SUCCESS:
+			m_dnsInProgressFlag = false;
+			break;
+
+		case dnsParseState_t::DNS_PARSE_ERROR:
+			m_dnsInProgressFlag = false;
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
+
+bool Eth::DNSresolveFinished() const{ return (Eth::isReady() && m_dnsFinishedFlag); }
+
+uint8_t Eth::buildBody(char *data){
+	String body(m_httpBody, Eth::HTTP_MAX_BDY_LEN);
+
+	body += "device=";
+	body += m_httpUsrAgent;
+	body += "&path=";				//	m_httpBody = "device=[usrAgent]&path="
+	body += m_httpServerDataPath;	//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]"
+	body += "&data=";				//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data="
+
+	body += data;
+
+	if(body.getError() == String::OK){
+		m_httpBodyLen = body.getLen();
+	}else{
+		m_httpBody[0] = '\0';
+		m_httpBodyLen = 0;
+	}
+
+	return m_httpBodyLen;
+}
+
+uint16_t Eth::buildRequest(){
+	String request(m_httpRequest, Eth::HTTP_MAX_RQST_LEN);
+
+	request += "POST ";
+	request += m_httpServerPath;
+	request += " HTTP/1.1\r\n";
+	request += "Host: ";
+	request += m_httpServerHost;
+	request += "\r\n";
+	request += "Content-Type: application/x-www-form-urlencoded\r\n";
+	request += "Content-Length: ";
+	request += m_httpBodyLen;
+	request += "\r\n";
+
+	request += "Connection: close\r\n";
+	request += "User-Agent: "
+	request += m_httpUsrAgent;
+	request += "\r\n";
+	request += "\r\n";
+	request += m_httpBody;
+
+	if(request.getError() == String::OK){
+			m_httpRequestLen = request.getLen();
+		}else{
+			m_httpRequest[0] = '\0';
+			m_httpRequestLen = 0;
+		}
+
+	return m_httpRequestLen;
+/*	REQUEST:
+ *  "POST [serverPath] HTTP/1.1\r\n"
+ *  "Host: [serverHost]\r\n"
+ *  "Content-Type: application/x-www-form-urlencoded\r\n"
+ *  "Content-Length: [m_httpBodyLen]\r\n"
+ *  "Connection: close\r\n"
+ *  "User-Agent: [usrAgent]\r\n"
+ *  "\r\n"
+ *  "device=[usrAgent]&path=[serverDataPath]&data=[data]"
+ */
+}
+
+bool Eth::buildRequestLen(){
+	String cmd(m_cmdBuffer, 30);
+
+	cmd += "AT+CIPSEND=";
+	cmd += m_httpRequestLen;
+	cmd += "\r\n";
+
+	if(cmd.getError() == String::OK){
+		return true;	//	armo "AT+CIPSEND=m_httpRequestLen\r\n"
+	}
+	return false;
+	//	Esperar respuesta del servidor
+}
+
 void Eth::handler(){
 
 	//	Finished a single SPI transfer (single packet)
@@ -1434,6 +1852,51 @@ void Eth::handler(){
 			break;
 
 
+		//	-------------------------	DNS	-------------------------	//
+
+		case ethState_t::ETH_DNS_BUILD_QUERY:
+			Eth::DNSbuildQuery();
+			if(Eth::currentError() != Eth::ERROR_DNS_INVALID_DOMAIN){
+				m_localPortBuffer[0] = 0;
+				m_localPortBuffer[1] = 0;
+
+				m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
+			}else{
+				m_dnsInProgressFlag = false;
+				m_ethState = ethState_t::ETH_IDLE;
+			}
+			break;
+
+		case ethState_t::ETH_DNS_SEND_QUERY:
+			m_sendBuffer = m_dnsQueryBuffer;
+			m_sendLen = m_dnsQueryLen;
+			m_sendProcessedLen = 0;
+			m_sendCurrentLen = 0;
+			m_sendRemainingLen = 0;
+			m_sendFinishedFlag = false;
+
+			m_ethState = ethState_t::ETH_SOCKET_SEND_READ_TX_FSR;
+			break;
+
+		case ethState_t::ETH_DNS_WAIT_RESPONSE:
+			Eth::DNSwaitResponse();
+			m_ethState = ethState_t::ETH_SOCKET_RCV_READ_RX_RSR;
+			break;
+
+		case ethState_t::ETH_DNS_PARSE_RESPONSE:
+			Eth::DNSparseResponse();
+			if(m_dnsParseState == dnsParseState_t::DNS_PARSE_ERROR){
+				m_ethState = ethState_t::ETH_IDLE;
+			}else if(m_dnsParseState == dnsParseState_t::DNS_PARSE_SUCCESS){
+				m_ethState = ethState_t::ETH_DNS_FINISHED;
+			}
+			break;
+
+		case ethState_t::ETH_DNS_FINISHED:
+			m_dnsFinishedFlag = true;
+			m_ethState = ethState_t::ETH_IDLE;
+			break;
+
 		//	-------------------------	SOCKET STATUS READ	-------------------------	//
 
 
@@ -1506,12 +1969,7 @@ void Eth::handler(){
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
 			}else if((m_socketMode == socketMode_t::UDP_MODE) && (m_socketStat == socketStat_t::SOCK_UDP)){	//	UDP MODE
 				m_timeoutTimer.stopTimer();
-				if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
-					m_destinationSetFlag = false;
-					m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
-				}else{
-					m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
-				}
+				m_ethState = ethState_t::ETH_SOCKET_OPEN_FINISHED;
 			}else{
 				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_OPEN_CHECK_STATUS);
 			}
@@ -1521,7 +1979,16 @@ void Eth::handler(){
 			if(m_timeoutTimer.isRunning())
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
-			m_ethState = ethState_t::ETH_IDLE;
+
+			if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
+				m_destinationSetFlag = false;
+				m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
+			}else if(m_dnsInProgressFlag){
+				Eth::DNSsetRemoteIPandPort();
+				m_ethState = ethState_t::ETH_SOCKET_WRITE_IP;
+			}else{
+				m_ethState = ethState_t::ETH_IDLE;
+			}
 			break;
 
 
@@ -1551,7 +2018,7 @@ void Eth::handler(){
 					m_ethState = ethState_t::ETH_SOCKET_CONNECT_WRITE_COMMAND;
 				}else if(m_socketMode == socketMode_t::UDP_MODE){
 					if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
-						m_ethState = ethState_t::ETH_DHCP_BUILD_DISCOVER;
+						m_ethState = ethState_t::ETH_SOCKET_CONNECT_FINISHED;
 					}else{
 						m_destinationSetFlag = true;
 						m_ethState = ethState_t::ETH_SOCKET_CONNECT_FINISHED;
@@ -1596,7 +2063,13 @@ void Eth::handler(){
 			if(m_timeoutTimer.isRunning())
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
-			m_ethState = ethState_t::ETH_IDLE;
+
+			if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP))
+				m_ethState = ethState_t::ETH_DHCP_BUILD_DISCOVER;
+			else if(m_dnsInProgressFlag)
+				m_ethState = ethState_t::ETH_DNS_SEND_QUERY;
+			else
+				m_ethState = ethState_t::ETH_IDLE;
 			break;
 
 
@@ -1757,11 +2230,16 @@ void Eth::handler(){
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
 			m_sendFinishedFlag = true;
+
 			if(m_dhcpInProgressFlag && (m_initConfigMode == initConfigMode_t::INIT_WITH_DHCP)){
 				if(m_dhcpState == dhcpState_t::DHCP_BUILD_DISCOVER)
 					m_ethState = ethState_t::ETH_DHCP_WAIT_OFFER;
 				else if(m_dhcpState == dhcpState_t::DHCP_BUILD_REQUEST)
 					m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;
+
+			}else if(m_dnsInProgressFlag){
+				m_ethState = ethState_t::ETH_DNS_WAIT_RESPONSE;
+
 			}else{
 				m_ethState = ethState_t::ETH_IDLE;
 			}
@@ -1939,6 +2417,13 @@ void Eth::handler(){
 					m_ethState = ethState_t::ETH_DHCP_PARSE_OFFER;
 				else if(m_dhcpState == dhcpState_t::DHCP_WAIT_ACK)
 					m_ethState = ethState_t::ETH_DHCP_PARSE_ACK;
+
+			}else if(m_dnsInProgressFlag){
+				m_dnsRxLen = m_actualRcvLen;
+				m_dnsCurrentIndex = 0;
+				m_dnsParseState = dnsParseState_t::DNS_PARSE_HEADER;
+				m_ethState = ethState_t::ETH_DNS_PARSE_RESPONSE;
+
 			}else{
 				m_ethState = ethState_t::ETH_IDLE;
 			}

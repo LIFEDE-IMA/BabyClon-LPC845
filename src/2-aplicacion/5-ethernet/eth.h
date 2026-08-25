@@ -13,6 +13,7 @@
 
 #include "spi.h"
 #include "systimer.h"
+#include "my_string.h"
 
 #define MAX_SPI_TRANSFER_LEN	128
 
@@ -224,6 +225,12 @@ class Eth : public SpiSlave{
 			ETH_DHCP_PARSE_ACK,
 			ETH_DHCP_VALIDATE_ACK,
 			ETH_DHCP_FINISHED,
+			//	DNS
+			ETH_DNS_BUILD_QUERY,
+			ETH_DNS_SEND_QUERY,
+			ETH_DNS_WAIT_RESPONSE,
+			ETH_DNS_PARSE_RESPONSE,
+			ETH_DNS_FINISHED,
 			//	READ SOCKET STATUS
 			ETH_SOCKET_STATUS_READ,
 			ETH_SOCKET_STATUS_WAIT_READ,
@@ -305,8 +312,12 @@ class Eth : public SpiSlave{
 		enum ethErrorStat_t{
 			ERROR_NONE,
 			ERROR_TIMEOUT,
-			ERROR_SOCK_CLOSED
+			ERROR_SOCK_CLOSED,
+			ERROR_DNS_INVALID_DOMAIN,
+			ERROR_DNS_INVALID_RESPONSE
 		};
+
+		static const uint8_t DNS_MAX_DOMAIN_LEN = 253;
 
 	private:
 		enum transferContext_t : uint8_t{
@@ -464,6 +475,70 @@ class Eth : public SpiSlave{
 		bool m_dhcpOptionNACKfound;
 		bool m_dhcpFinishedFlag;
 
+		//	---------------		DNS		---------------
+
+		enum dnsParseState_t : uint8_t{
+			DNS_PARSE_NONE,
+			DNS_PARSE_HEADER,
+			DNS_PARSE_QUESTION_NAME,
+			DNS_PARSE_QUESTION_TYPE,
+			DNS_PARSE_ANSWER_NAME,
+			DNS_PARSE_ANSWER_FIXED,
+			DNS_PARSE_ANSWER_DATA,
+			DNS_PARSE_SUCCESS,
+			DNS_PARSE_ERROR
+		};
+
+		dnsParseState_t m_dnsParseState;
+
+		static const uint16_t DNS_PORT = 53;
+		static const uint16_t DNS_BUFFER_LEN = 512;
+
+		uint8_t m_dnsQueryBuffer[Eth::DNS_BUFFER_LEN];
+		uint8_t m_dnsRxBuffer[Eth::DNS_BUFFER_LEN];
+
+		uint16_t m_dnsQueryLen;
+		uint16_t m_dnsRxLen;
+
+		uint16_t m_dnsTransactionID;
+
+		char m_dnsDomain[(Eth::DNS_MAX_DOMAIN_LEN + 1)];
+		uint8_t m_dnsServerIP[4];
+		uint8_t m_dnsResolvedIP[4];
+
+		uint16_t m_dnsCurrentIndex;
+
+		uint16_t m_dnsQDcount;
+		uint16_t m_dnsANcount;
+		uint16_t m_dnsAnswRemaining;
+		uint16_t m_dnsAnswType;
+		uint16_t m_dnsAnswClass;
+		uint16_t m_dnsAnswDataLen;
+
+		bool m_dnsFinishedFlag;
+		bool m_dnsInProgressFlag;
+
+		//	---------------		HTTP		---------------
+
+		static const uint16_t HTTP_MAX_RQST_LEN = 400;
+		static const uint8_t HTTP_MAX_BDY_LEN = 150;
+		static const uint8_t HTTP_MAX_SERVER_PATH_LEN = 250;
+		static const uint8_t HTTP_MAX_USR_AGENT_LEN = 50;
+
+		char m_httpServerHost[(Eth::DNS_MAX_DOMAIN_LEN + 1)];
+		char m_httpServerPath[HTTP_MAX_SERVER_PATH_LEN];
+
+		char m_httpRequest[HTTP_MAX_RQST_LEN];
+		uint16_t m_httpRequestLen;
+
+		char m_httpBody[HTTP_MAX_BDY_LEN];
+		uint8_t m_httpBodyLen;
+
+		char m_httpUsrAgent[HTTP_MAX_USR_AGENT_LEN];
+
+		char m_httpServerDataPath[HTTP_MAX_SERVER_PATH_LEN];
+
+
 		//	-----------------------------------
 
 		void transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Makes ONE transfer of [ MAX_SPI_TRANSFER_LEN ] bytes
@@ -510,7 +585,17 @@ class Eth : public SpiSlave{
 		bool DHCPparseACK();		//	Returns True if DHCP ACK is OK so we can finish DHCP init
 		bool DHCPfinished() const;	//	Returns True when acquired IP, Subnet & Gateway
 
-		void timeoutError();	//	Handles ERROR_TIMEOUT
+		void DNSgenerateXid();			//	Generates Transaction ID for DNS
+		void DNSbuildQuery();			//	Builds	QUERY DNS
+		void DNSsetRemoteIPandPort();	//	Modifies m_remoteIPBuffer & m_remotePortBuffer
+		void DNSwaitResponse();			//	Prepares the driver before reading DNS RESPONSE
+		void DNSparseResponse();		//	Handles DNS RESPONSE and checks if its OK to end DNS operation
+
+		uint8_t HTTPbuildBody(char *data);	//	Builds body for our POST HTTP
+		uint16_t HTTPbuildRequest();		//	Builds request for out POST HTTP
+		bool HTTPbuildRequestLen();			//	Builds request len for our POST HTTP
+
+		void timeoutError();			//	Handles ERROR_TIMEOUT
 
 	public:
 		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
@@ -532,11 +617,16 @@ class Eth : public SpiSlave{
 		ethErrorStat_t currentError() const;	//	Returns Socket Current Error Stat
 		ethState_t stateWhenLastError() const;	//	Returns Eth State in which ocurred last error
 
+		void DNSresolve(const char *domain);	//	Starts DNS operation to acquire server ip
+		bool DNSresolveFinished() const;		//	Returns True if DNS operation ended
+
 		void socketOpen(socketMode_t sockMode, uint16_t localPort);		//	Opens Socket, TCP / UDP Socket Mode
 		bool socketOpened() const;										//	Returns True if Socket is Opened
 		void socketTCPconnect(uint8_t remoteIP[4], uint16_t remotePort);//	Connects Socket, TCP Socket Mode
+		void socketTCPconnect(uint16_t remotePort);						//	DNS version of TCPconnect
 		bool socketTCPconnected() const;								//	Returns True if TCP Socket is Connected
 		void socketUDPsetDest(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
+		void socketUDPsetDest(uint16_t remotePort);						//	DNS version of UDPsetDest
 		bool socketUDPdestSet() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
 		void socketTCPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, TCP Socket Mode
 		void socketUDPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode

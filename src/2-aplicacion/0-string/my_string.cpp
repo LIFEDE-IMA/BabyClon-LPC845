@@ -25,7 +25,25 @@ uint16_t String::strlen(const char *str){
     return i;
 }
 
+uint16_t String::strlen(char *str){
+    uint16_t i = 0;
+    while(*str != '\0'){
+        i++;
+        str++;
+    }
+    return i;
+}
+
 void String::strcpy(char *dest, const char *src){
+    while(*src != '\0'){
+        *dest = *src;
+        dest++;
+        src++;
+    }
+    *dest = '\0';
+}
+
+void String::strcpy(char *dest, char *src){
     while(*src != '\0'){
         *dest = *src;
         dest++;
@@ -133,6 +151,23 @@ void String::append(const char *str){
 	m_error = error_type::OK;
 }
 
+void String::append(char *str){
+	if(!str){
+		m_error = error_type::NULL_STR;
+		return;
+	}
+
+	uint16_t len = String::strlen(str);
+
+	if(m_index + len >= MAX_LEN){
+		m_error = error_type::BUFFER_OVERFLOW;
+		return;
+	}
+	String::strcpy(m_str + m_index, str);	//	Adds str to existing m_str
+	m_index += len;
+	m_error = error_type::OK;
+}
+
 void String::uint_to_str(uint32_t val, char *str){
 	char aux[11];			//	Max number: 2^32 - 1
 	uint8_t i = 0, j = 0;
@@ -155,6 +190,11 @@ void String::uint_to_str(uint32_t val, char *str){
 }
 
 String& String::operator +=(const char *str){
+	String::append(str);
+	return *this;
+}
+
+String& String::operator +=(char *str){
 	String::append(str);
 	return *this;
 }

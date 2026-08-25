@@ -29,6 +29,12 @@ int main(void) {
 	uint8_t subnet[4] = {255, 255, 255, 0};
 	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x33};
 
+	char SERVER[] = "webhook.site";
+	char SERVER_PATH[] = "/c14b89e5-2ae5-4828-bc26-64836e8505cf";
+
+	uint16_t localPort = 80;
+	uint16_t serverPort = 80;
+
 	uint8_t txMsg[] = "Hola desde LPC845";
 	uint8_t txMsg2[] = "Hola desde LPC845, via modulo ethernet w5500, este mensaje es bastante largo para superar los 128 bytes por transferencia que tiene el buffer. Hoy es martes 11 de Agosto y el total son 194 bytes";
 	uint8_t rxMsg[250] = {0};
@@ -38,7 +44,7 @@ int main(void) {
 	bool f_sendStarted = false;
 	bool f_receiveStarted = false;
 	bool f_closeStarted = false;
-	bool f_initialCloseStarted = false;
+	bool f_solvingDNS = false;
 
     for(volatile int i = 0; i < 500000; i++);
 
@@ -48,20 +54,18 @@ int main(void) {
     while(1){
     	eth.handler();
 
-    	if(!f_initialCloseStarted && !eth.socketCloseFinished()){
-    		eth.socketClose();
-    		f_initialCloseStarted = true;
+    	if(eth.isReady() && !f_solvingDNS){
+    		eth.DNSresolve(SERVER);
+    		f_solvingDNS = true;
     	}
 
-    	if(eth.isReady() && !f_openStarted){
-    		eth.socketOpen(Eth::TCP_MODE, 5000);
+    	if(eth.DNSresolveFinished() && !f_openStarted){
+    		eth.socketOpen(Eth::TCP_MODE, localPort);
     		f_openStarted = true;
     	}
 
     	if(eth.socketOpened() && !f_connectStarted){
-    		uint8_t serverIP[4] = {192, 168, 0, 7};
-
-    		eth.socketTCPconnect(serverIP, 5000);
+    		eth.socketTCPconnect(serverPort);
 
     		f_connectStarted = true;
     	}

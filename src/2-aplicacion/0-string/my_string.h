@@ -19,8 +19,8 @@ class String{
 		uint16_t m_index;
 		uint8_t m_error;
 
-		void strcpy(char *dest, const char *src);	//	Copies src into dest
 		void append(const char *str);				//	Concatenation
+		void append(char *str);						//	Concatenation
 
 		void uint_to_str(uint32_t val, char *str);	//	Converts uint_t to string
 
@@ -34,12 +34,16 @@ class String{
 		String(char *str, uint16_t size);							//	Constructor
 
 		static uint16_t strlen(const char *str);					//	Gets str length
+		static uint16_t strlen(char *str);							//	Gets str length
+		static void strcpy(char *dest, const char *src);			//	Copies src into dest
+		static void strcpy(char *dest, char *src);					//	Copies src into dest
 		static int strcmp(const char *s1, const char *s2);			//	Compares s1 with s2
 		static const char* strstr(const char *s1, const char *s2);	//  Searches s2 in s1
 		static int float2str(float data, char *buffer, int initPos = 0);		//	Converts float to string
 		static int floatVec2str(float *data, uint8_t dataSize, char *buffer);	//	Converts float vector to string
 
 		String& operator+=(const char *str);						//	Concatenation
+		String& operator+=(char *str);								//	Concatenation
 		String& operator+=(uint8_t val);							//	Concatenation str + uint8_t
 		String& operator+=(uint16_t val);							//	Concatenation str + uint16_t
 		String& operator+=(uint32_t val);							//	Concatenation str + uint32_t
