@@ -25,41 +25,6 @@
 
 #define MAX_SPI_TRANSFER_LEN	128
 
-//	------------------	DHCP	------------------------	//
-
-#define DHCP_BUFFER_LEN			512
-#define DHCP_FIXED_HEADER_LEN	236
-#define	DHCP_MAGIC_COOKIE_LEN	4
-
-#define DHCP_CLIENT_PORT	68
-#define DHCP_SERVER_PORT	67
-
-#define DHCP_OP_BOOT_REQUEST	1
-#define	DHCP_OP_BOOT_REPLY		2
-
-#define DHCP_HTYPE_ETHERNET	1
-#define	DHCP_HLEN_ETHERNET	6
-
-#define	DHCP_DISCOVER	1
-#define DHCP_OFFER		2
-#define DHCP_REQUEST	3
-#define	DHCP_DECLINE	4
-#define	DHCP_ACK		5
-#define	DHCP_NACK		6
-
-#define DHCP_OPTION_PAD					0
-#define DHCP_OPTION_SUBNET_MASK			1
-#define DHCP_OPTION_ROUTER				3
-#define DHCP_OPTION_DNS					6
-#define DHCP_OPTION_REQUESTED_IP		50
-#define DHCP_OPTION_LEASE_TIME			51
-#define DHCP_OPTION_MESSAGE_TYPE		53
-#define DHCP_OPTION_SERVER_IDENTIFIER 	54
-#define DHCP_OPTION_PARAMETER_REQUEST	55
-#define DHCP_OPTION_CLIENT_IDENTIFIER	61
-#define DHCP_OPTION_END                	255
-
-
 class Eth : public SpiSlave{
 	public:
 		enum block_t : uint8_t{
@@ -441,6 +406,38 @@ class Eth : public SpiSlave{
 
 		//	---------------		DCHP	---------------
 
+		static const uint16_t DHCP_BUFFER_LEN = 512;
+		static const uint8_t DHCP_FIXED_HEADER_LEN = 236;
+		static const uint8_t DHCP_MAGIC_COOKIE_LEN = 4;
+
+		static const uint8_t DHCP_CLIENT_PORT = 68;
+		static const uint8_t DHCP_SERVER_PORT = 67;
+
+		static const uint8_t DHCP_OP_BOOT_REQUEST = 1;
+		static const uint8_t DHCP_OP_BOOT_REPLY = 2;
+
+		static const uint8_t DHCP_HTYPE_ETHERNET = 1;
+		static const uint8_t DHCP_HLEN_ETHERNET = 6;
+
+		static const uint8_t DHCP_DISCOVER = 1;
+		static const uint8_t DHCP_OFFER	 = 2;
+		static const uint8_t DHCP_REQUEST = 3;
+		static const uint8_t DHCP_DECLINE = 4;
+		static const uint8_t DHCP_ACK = 5;
+		static const uint8_t DHCP_NACK = 6;
+
+		static const uint8_t DHCP_OPTION_PAD = 0;
+		static const uint8_t DHCP_OPTION_SUBNET_MASK = 1;
+		static const uint8_t DHCP_OPTION_ROUTER = 3;
+		static const uint8_t DHCP_OPTION_DNS = 6;
+		static const uint8_t DHCP_OPTION_REQUESTED_IP = 50;
+		static const uint8_t DHCP_OPTION_LEASE_TIME = 51;
+		static const uint8_t DHCP_OPTION_MESSAGE_TYPE = 53;
+		static const uint8_t DHCP_OPTION_SERVER_IDENTIFIER = 54;
+		static const uint8_t DHCP_OPTION_PARAMETER_REQUEST = 55;
+		static const uint8_t DHCP_OPTION_CLIENT_IDENTIFIER = 61;
+		static const uint8_t DHCP_OPTION_END = 255;
+
 		enum dhcpState_t : uint8_t{
 			DHCP_IDLE,
 			DHCP_START,
@@ -669,6 +666,10 @@ class Eth : public SpiSlave{
 
 		void timeoutError();			//	Handles ERROR_TIMEOUT
 
+		void SPItransferHandler();			//	Handles SPI operations (read/write buffer)
+		void W5500configStateMachine();		//	Handles MAC, IP, SUBNET, GATEWAY & BUFFERS_SIZE W5500 configuration
+		void W5500selectNextConfigState();	//	Selects which state W5500configStateMachine() should config
+
 	public:
 		Eth(bool portCS, uint8_t pinCS, Spi &spi);	//	Constructor
 
@@ -704,7 +705,7 @@ class Eth : public SpiSlave{
 		bool HTTPerrorOccurred() const;		//	Returns true if http had an Error
 		void HTTPrestartAfterError();		//	Prepares driver for its restart after an error occurred
 
-		void handler();			//	Non-blocking W5500 handler
+		void stateMachine();				//	Non-blocking W5500 handler
 
 		~Eth();		//	Destructor
 };

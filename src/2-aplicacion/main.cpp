@@ -26,7 +26,7 @@ static bool f_heartbeatTimerExpired;
 int main(void) {
 
 	HW_init();
-//	while(1);
+
 	Spi spiMaster(0, 23, 0, 26, 0, 21, Spi::SPI_NUMBER_0, 1000000);
 	Eth eth(0, 22, spiMaster);
 
@@ -52,16 +52,13 @@ int main(void) {
 	eth.HTTPuploading(false);
 	eth.HTTPheartBeating(false);
 
-    for(volatile int i = 0; i < 500000; i++);
-
-//	NO DHCP	//eth.init(ip, gateway, subnet, mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB, Eth::MANUAL_CLOSE);
     eth.init(mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB, Eth::MANUAL_CLOSE);
 
     uploadDataTimer.startTimer();
     heartbeatTimer.startTimer();
 
     while(1){
-    	eth.handler();
+    	eth.stateMachine();
 
     	if(eth.isReady() && !f_solvingDNS){
     		eth.DNSresolve(SERVER);
