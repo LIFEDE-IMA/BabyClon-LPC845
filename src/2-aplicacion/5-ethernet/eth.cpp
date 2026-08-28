@@ -40,6 +40,14 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_dnsFinishedFlag = false;
 	m_dnsInProgressFlag = false;
 	m_dnsParseState = dnsParseState_t::DNS_PARSE_NONE;
+	m_httpState = httpState_t::HTTP_IDLE;
+	m_httpInProgressFlag = false;
+	m_httpFinishedFlag = false;
+	m_httpErrorOccurred = false;
+	m_httpHeartbeatInProgressFlag = false;
+	m_httpHeartbeatFinishedFlag = false;
+	m_httpUploading_usrFlag = false;
+	m_httpHeartBeating_usrFlag = false;
 	m_currentConfigStat = configState_t::CONFIG_NONE;
 	m_socketStat = socketStat_t::SOCK_CLOSED;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
@@ -377,6 +385,13 @@ void Eth::timeoutError(){
 	m_timeoutTimer.stopTimer();
 	m_ethError = ethErrorStat_t::ERROR_TIMEOUT;
 	m_ethStateWhenLastError = m_ethState;
+
+	if(m_httpInProgressFlag){
+		Eth::HTTPtimeoutError(m_ethStateWhenLastError);
+		if(m_ethState == ethState_t::ETH_SOCKET_DISCONNECT_CHECK_STATUS)
+			return;	//	If disconnect is required, keep ethState for that
+	}
+
 	m_ethState = ethState_t::ETH_IDLE;
 }
 
@@ -468,7 +483,7 @@ bool Eth::socketUDPdestSet() const{
 	return ((!Eth::isBusy()) && m_destinationSetFlag && !(Eth::socketStatus() == socketStat_t::SOCK_CLOSED));
 }
 
-void Eth::socketTCPsend(uint8_t *buffer, uint16_t len){
+void Eth::socketTCPsend(const void *buffer, uint16_t len){
 	if((!Eth::isReady())   ||
 	   (buffer == nullptr) ||
 	   (len == 0) 		   ||
@@ -479,7 +494,7 @@ void Eth::socketTCPsend(uint8_t *buffer, uint16_t len){
 	if(m_timeoutTimer.isRunning())
 		m_timeoutTimer.stopTimer();
 
-	m_sendBuffer = buffer;
+	m_sendBuffer = (uint8_t *)buffer;
 	m_sendLen = len;
 	m_sendRemainingLen = m_sendLen;
 	m_sendProcessedLen = 0;
@@ -518,7 +533,7 @@ bool Eth::socketSendFinished() const{
 	return (!Eth::isBusy() && m_sendFinishedFlag && !(Eth::socketStatus() == socketStat_t::SOCK_CLOSED));
 }
 
-void Eth::socketTCPreceive(uint8_t *buffer, uint16_t maxLen){
+void Eth::socketTCPreceive(const void *buffer, uint16_t maxLen){
 	if((!Eth::isReady())   ||
 	   (buffer == nullptr) ||
 	   (maxLen == 0) 	   ||
@@ -529,7 +544,7 @@ void Eth::socketTCPreceive(uint8_t *buffer, uint16_t maxLen){
 	if(m_timeoutTimer.isRunning())
 		m_timeoutTimer.stopTimer();
 
-	m_rcvBuffer = buffer;
+	m_rcvBuffer = (uint8_t *)buffer;
 	m_usrAskedRcvLen = maxLen;
 	m_actualRcvLen = 0;
 	m_rcvFinishedFlag = false;
@@ -1495,16 +1510,20 @@ void Eth::DNSparseResponse(){
 
 bool Eth::DNSresolveFinished() const{ return (Eth::isReady() && m_dnsFinishedFlag); }
 
-uint8_t Eth::buildBody(char *data){
+uint8_t Eth::HTTPbuildBody(const char *data){
 	String body(m_httpBody, Eth::HTTP_MAX_BDY_LEN);
 
 	body += "device=";
 	body += m_httpUsrAgent;
-	body += "&path=";				//	m_httpBody = "device=[usrAgent]&path="
-	body += m_httpServerDataPath;	//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]"
-	body += "&data=";				//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data="
 
-	body += data;
+	if(data != nullptr){	//	Normal request
+		body += "&path=";				//	m_httpBody = "device=[usrAgent]&path="
+		body += m_httpServerDataPath;	//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]"
+		body += "&data=";				//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data="
+		body += data;					//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data=[data]"
+	}
+
+	//	Else (data == nullptr) => Heartbeat
 
 	if(body.getError() == String::OK){
 		m_httpBodyLen = body.getLen();
@@ -1516,7 +1535,7 @@ uint8_t Eth::buildBody(char *data){
 	return m_httpBodyLen;
 }
 
-uint16_t Eth::buildRequest(){
+uint16_t Eth::HTTPbuildRequest(){
 	String request(m_httpRequest, Eth::HTTP_MAX_RQST_LEN);
 
 	request += "POST ";
@@ -1531,7 +1550,7 @@ uint16_t Eth::buildRequest(){
 	request += "\r\n";
 
 	request += "Connection: close\r\n";
-	request += "User-Agent: "
+	request += "User-Agent: ";
 	request += m_httpUsrAgent;
 	request += "\r\n";
 	request += "\r\n";
@@ -1557,18 +1576,295 @@ uint16_t Eth::buildRequest(){
  */
 }
 
-bool Eth::buildRequestLen(){
-	String cmd(m_cmdBuffer, 30);
+void Eth::HTTPcheckResponse(){
+	if(m_httpState != httpState_t::HTTP_CHECK)
+		return;
 
-	cmd += "AT+CIPSEND=";
-	cmd += m_httpRequestLen;
-	cmd += "\r\n";
+	const char *ok_10 = String::strstr(m_httpServerResponse, "HTTP/1.0 200 OK");
+	const char *ok_11 = String::strstr(m_httpServerResponse, "HTTP/1.1 200 OK");
 
-	if(cmd.getError() == String::OK){
-		return true;	//	armo "AT+CIPSEND=m_httpRequestLen\r\n"
+	if(ok_10 || ok_11){
+		m_httpState = httpState_t::HTTP_SUCCESS;
+	}else{
+		m_httpError = httpError_t::HTTP_ERROR_CHECK_RESPONSE;
+		m_httpState = httpState_t::HTTP_ERROR;
 	}
-	return false;
-	//	Esperar respuesta del servidor
+}
+
+void Eth::HTTPuploadData(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *serverDataPath, const char *device, const char *data){
+	if(Eth::HTTPerrorOccurred() || 	m_httpHeartbeatInProgressFlag)
+		return;
+
+	m_httpInProgressFlag = true;
+	m_httpFinishedFlag = false;
+	m_httpErrorOccurred = false;
+
+	for(uint8_t i = 0; i < (Eth::DNS_MAX_DOMAIN_LEN + 1); i++)	m_httpServerHost[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RQST_LEN; i++)	m_httpRequest[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_BDY_LEN; i++)	m_httpBody[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_USR_AGENT_LEN; i++)	m_httpUsrAgent[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerDataPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RESPONSE_LEN; i++)	m_httpServerResponse[i] = 0;
+
+	String::strcpy(m_httpServerHost, m_dnsDomain);
+	String::strcpy(m_httpServerPath, serverPath);
+	String::strcpy(m_httpServerDataPath, serverDataPath);
+	String::strcpy(m_httpUsrAgent, device);
+
+	m_httpServerPort = serverPort;
+	m_httpServerResponseLen = 0;
+	m_httpBodyLen = 0;
+	m_httpRequestLen = 0;
+
+	m_httpError = httpError_t::HTTP_ERROR_NONE;
+
+	Eth::HTTPbuildBody(data);
+	Eth::HTTPbuildRequest();
+
+	if((m_httpBodyLen != 0) && (m_httpRequestLen != 0)){
+		Eth::socketOpen(Eth::TCP_MODE, localPort);
+		m_httpState = httpState_t::HTTP_CONNECT;
+	}else{
+		m_httpState = httpState_t::HTTP_ERROR;
+		m_httpError = httpError_t::HTTP_ERROR_BUILDING;
+	}
+}
+
+bool Eth::HTTPdataUploaded() const{ return m_httpFinishedFlag; }
+
+void Eth::HTTPheartbeat(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *device){
+	if(Eth::HTTPerrorOccurred() || m_httpInProgressFlag)
+		return;
+
+	m_httpInProgressFlag = true;
+	m_httpFinishedFlag = false;
+	m_httpHeartbeatInProgressFlag = true;
+	m_httpHeartbeatFinishedFlag = false;
+	m_httpErrorOccurred = false;
+
+	for(uint8_t i = 0; i < (Eth::DNS_MAX_DOMAIN_LEN + 1); i++)	m_httpServerHost[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RQST_LEN; i++)	m_httpRequest[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_BDY_LEN; i++)	m_httpBody[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_USR_AGENT_LEN; i++)	m_httpUsrAgent[i] = 0;
+
+	String::strcpy(m_httpServerHost, m_dnsDomain);
+	String::strcpy(m_httpServerPath, serverPath);
+	String::strcpy(m_httpUsrAgent, device);
+
+	m_httpServerPort = serverPort;
+	m_httpBodyLen = 0;
+	m_httpRequestLen = 0;
+
+	m_httpError = httpError_t::HTTP_ERROR_NONE;
+
+	Eth::HTTPbuildBody(nullptr);	//	Builds body for heartbeat
+	Eth::HTTPbuildRequest();
+
+	if((m_httpBodyLen != 0) && (m_httpRequestLen != 0)){
+		Eth::socketOpen(Eth::TCP_MODE, localPort);
+		m_httpState = httpState_t::HTTP_CONNECT;
+	}else{
+		m_httpState = httpState_t::HTTP_ERROR;
+		m_httpError = httpError_t::HTTP_ERROR_BUILDING;
+	}
+}
+
+bool Eth::HTTPerrorOccurred() const{ return m_httpErrorOccurred; }
+
+void Eth::HTTPuploadData(){
+	if(!Eth::isReady() || !m_httpInProgressFlag || 	m_httpHeartbeatInProgressFlag)
+		return;
+
+	switch(m_httpState){
+		case httpState_t::HTTP_IDLE:
+			//	Nothing to do
+			break;
+
+		case httpState_t::HTTP_CONNECT:
+			if(Eth::socketOpened()){
+				Eth::socketTCPconnect(m_httpServerPort);
+				m_httpState = httpState_t::HTTP_SEND;
+			}
+			break;
+
+		case httpState_t::HTTP_SEND:
+			if(Eth::socketTCPconnected()){
+				Eth::socketTCPsend(m_httpRequest, m_httpRequestLen);
+				m_httpState = httpState_t::HTTP_RCV;
+			}
+			break;
+
+		case httpState_t::HTTP_RCV:
+			if(Eth::socketSendFinished()){
+				Eth::socketTCPreceive(m_httpServerResponse, Eth::HTTP_MAX_RESPONSE_LEN);
+				m_httpState = httpState_t::HTTP_CHECK;
+			}
+			break;
+
+		case httpState_t::HTTP_CHECK:
+			if(Eth::socketReceiveFinished()){
+				m_httpServerResponseLen = Eth::socketReceivedLen();
+				Eth::HTTPcheckResponse();
+			}
+			break;
+
+		case httpState_t::HTTP_SUCCESS:
+			Eth::socketTCPdisconnect();
+			m_httpState = httpState_t::HTTP_FINISHED;
+			break;
+
+		case httpState_t::HTTP_FINISHED:
+			m_httpInProgressFlag = false;
+			m_httpFinishedFlag = true;
+			m_httpState = httpState_t::HTTP_IDLE;
+			break;
+
+		case httpState_t::HTTP_ERROR:
+			m_httpErrorOccurred = true;
+			m_httpInProgressFlag = false;
+			m_httpFinishedFlag = false;
+			m_httpState = httpState_t::HTTP_IDLE;
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
+
+bool Eth::HTTPheartbeatFinished() const{ return m_httpHeartbeatFinishedFlag; }
+
+void Eth::HTTPheartbeat(){
+	if(!Eth::isReady() || !m_httpInProgressFlag || 	!m_httpHeartbeatInProgressFlag)
+		return;
+
+	switch(m_httpState){
+		case httpState_t::HTTP_IDLE:
+			//	Nothing to do
+			break;
+
+		case httpState_t::HTTP_CONNECT:
+			if(Eth::socketOpened()){
+				Eth::socketTCPconnect(m_httpServerPort);
+				m_httpState = httpState_t::HTTP_SEND;
+			}
+			break;
+
+		case httpState_t::HTTP_SEND:
+			if(Eth::socketTCPconnected()){
+				Eth::socketTCPsend(m_httpRequest, m_httpRequestLen);
+				m_httpState = httpState_t::HTTP_RCV;
+			}
+			break;
+
+		case httpState_t::HTTP_RCV:
+			if(Eth::socketSendFinished()){
+				Eth::socketTCPreceive(m_httpServerResponse, Eth::HTTP_MAX_RESPONSE_LEN);
+				m_httpState = httpState_t::HTTP_CHECK;
+			}
+			break;
+
+		case httpState_t::HTTP_CHECK:
+			if(Eth::socketReceiveFinished()){
+				m_httpServerResponseLen = Eth::socketReceivedLen();
+				Eth::HTTPcheckResponse();
+			}
+			break;
+
+		case httpState_t::HTTP_SUCCESS:
+			Eth::socketTCPdisconnect();
+			m_httpState = httpState_t::HTTP_FINISHED;
+			break;
+
+		case httpState_t::HTTP_FINISHED:
+			m_httpInProgressFlag = false;
+			m_httpHeartbeatInProgressFlag = false;
+			m_httpHeartbeatFinishedFlag = true;
+			m_httpState = httpState_t::HTTP_IDLE;
+			break;
+
+		case httpState_t::HTTP_ERROR:
+			m_httpErrorOccurred = true;
+			m_httpInProgressFlag = false;
+			m_httpHeartbeatInProgressFlag = false;
+			m_httpHeartbeatFinishedFlag = false;
+			m_httpFinishedFlag = false;
+			m_httpState = httpState_t::HTTP_IDLE;
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
+
+void Eth::HTTPtimeoutError(ethState_t currentEthState){
+	switch(currentEthState){
+		case ethState_t::ETH_SOCKET_OPEN_CHECK_STATUS:
+			m_httpError = httpError_t::HTTP_ERROR_OPEN_TIMEOUT;
+			m_httpState = httpState_t::HTTP_ERROR;
+			break;
+
+		case ethState_t::ETH_SOCKET_CONNECT_CHECK_STATUS:
+			m_httpError = httpError_t::HTTP_ERROR_CONNECT_TIMEOUT;
+			m_httpState = httpState_t::HTTP_ERROR;
+			break;
+
+		case ethState_t::ETH_SOCKET_SEND_TCP_WAIT_TX_FSR:
+			m_httpError = httpError_t::HTTP_ERROR_SEND_TIMEOUT;
+			m_httpState = httpState_t::HTTP_ERROR;
+			Eth::socketTCPdisconnect();
+			break;
+
+		case ethState_t::ETH_SOCKET_SEND_WAIT_READ_INTERRUPT_STAT:
+			m_httpError = httpError_t::HTTP_ERROR_SEND_TIMEOUT;
+			m_httpState = httpState_t::HTTP_ERROR;
+			Eth::socketTCPdisconnect();
+			break;
+
+		case ethState_t::ETH_SOCKET_RCV_WAIT_READ_RX_RSR:
+			m_httpError = httpError_t::HTTP_ERROR_RCV_TIMEOUT;
+			m_httpState = httpState_t::HTTP_ERROR;
+			Eth::socketTCPdisconnect();
+			break;
+
+		case ethState_t::ETH_SOCKET_DISCONNECT_CHECK_STATUS:
+			m_httpError = httpError_t::HTTP_ERROR_NONE;
+			m_httpState = httpState_t::HTTP_FINISHED;
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
+
+void Eth::HTTPuploading(bool flag){ m_httpUploading_usrFlag = flag; }
+
+bool Eth::HTTPuploading() const{ return m_httpUploading_usrFlag; }
+
+void Eth::HTTPheartBeating(bool flag){ m_httpHeartBeating_usrFlag = flag; }
+
+bool Eth::HTTPheartBeating() const{ return m_httpHeartBeating_usrFlag; }
+
+bool Eth::HTTPisBusy() const{
+	return (!Eth::DNSresolveFinished() || Eth::HTTPuploading() || Eth::HTTPheartBeating());
+}
+
+void Eth::HTTPrestartAfterError(){
+	m_httpInProgressFlag = false;
+	m_httpHeartbeatInProgressFlag = false;
+	m_httpFinishedFlag = false;
+	m_httpErrorOccurred = false;
+	Eth::HTTPuploading(false);
+	Eth::HTTPheartBeating(false);
+
+	m_httpError = httpError_t::HTTP_ERROR_NONE;
+	m_httpState = httpState_t::HTTP_IDLE;
+
+	m_ethState = ethState_t::ETH_IDLE;
 }
 
 void Eth::handler(){
@@ -1661,8 +1957,13 @@ void Eth::handler(){
 	}
 
 
-	// Ethernet States Machine
+	//	HTTP heartbeat handler
+	Eth::HTTPheartbeat();
 
+	//	HTTP upload data handler
+	Eth::HTTPuploadData();
+
+	// Ethernet States Machine
 
 	switch(m_ethState){
 		case ethState_t::ETH_IDLE:
@@ -1886,6 +2187,7 @@ void Eth::handler(){
 		case ethState_t::ETH_DNS_PARSE_RESPONSE:
 			Eth::DNSparseResponse();
 			if(m_dnsParseState == dnsParseState_t::DNS_PARSE_ERROR){
+				m_dnsInProgressFlag = false;
 				m_ethState = ethState_t::ETH_IDLE;
 			}else if(m_dnsParseState == dnsParseState_t::DNS_PARSE_SUCCESS){
 				m_ethState = ethState_t::ETH_DNS_FINISHED;
@@ -1893,6 +2195,7 @@ void Eth::handler(){
 			break;
 
 		case ethState_t::ETH_DNS_FINISHED:
+			m_dnsInProgressFlag = false;
 			m_dnsFinishedFlag = true;
 			m_ethState = ethState_t::ETH_IDLE;
 			break;
@@ -2055,7 +2358,13 @@ void Eth::handler(){
 				//	ERROR
 				m_timeoutTimer.stopTimer();
 				m_ethError = ethErrorStat_t::ERROR_SOCK_CLOSED;
+				if(m_httpInProgressFlag){
+					m_httpError = httpError_t::HTTP_ERROR_CONN_SOCK_CLOSED;
+					m_httpState = httpState_t::HTTP_ERROR;
+				}
 				m_ethState = ethState_t::ETH_IDLE;
+			}else if(m_socketStat == socketStat_t::SOCK_EXCEPTION_TRANSIENT_STAT){
+				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_CONNECT_CHECK_STATUS);
 			}
 			break;
 

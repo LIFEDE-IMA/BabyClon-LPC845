@@ -17,6 +17,12 @@
 #include "spi.h"
 #include "eth.h"
 
+void uploadData(void);
+void heartbeat(void);
+
+static bool f_uploadTimerExpired;
+static bool f_heartbeatTimerExpired;
+
 int main(void) {
 
 	HW_init();
@@ -24,32 +30,35 @@ int main(void) {
 	Spi spiMaster(0, 23, 0, 26, 0, 21, Spi::SPI_NUMBER_0, 1000000);
 	Eth eth(0, 22, spiMaster);
 
-	uint8_t ip[4] = {192, 168, 0, 50};
-	uint8_t gateway[4] = {192, 168, 0, 1};
-	uint8_t subnet[4] = {255, 255, 255, 0};
+	SysTimer uploadDataTimer(10, SysTimer::SINGLE, SysTimer::T_SEG, uploadData);
+	SysTimer heartbeatTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, heartbeat);
+
 	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x33};
 
-	char SERVER[] = "webhook.site";
-	char SERVER_PATH[] = "/c14b89e5-2ae5-4828-bc26-64836e8505cf";
+	char SERVER[] = "cifedegss.mooo.com";
+	char SERVER_PATH[] = "/lab_server/guardar.php";
+	char SERVER_DATA_PATH[] = "/$clonLPC_pruebaEth";
+	char DEVICE[] = "monitoringLPC";
+	char DATA[] = "Hola desde LPC845 via Ethernet";
+	char SERVER_HEARTBEAT_PATH[] = "/lab_server/heartbeat.php";
 
-	uint16_t localPort = 80;
-	uint16_t serverPort = 80;
+	uint16_t localPort = 5000;
+	uint16_t serverPort = 8890;
 
-	uint8_t txMsg[] = "Hola desde LPC845";
-	uint8_t txMsg2[] = "Hola desde LPC845, via modulo ethernet w5500, este mensaje es bastante largo para superar los 128 bytes por transferencia que tiene el buffer. Hoy es martes 11 de Agosto y el total son 194 bytes";
-	uint8_t rxMsg[250] = {0};
-
-	bool f_openStarted = false;
-	bool f_connectStarted = false;
-	bool f_sendStarted = false;
-	bool f_receiveStarted = false;
-	bool f_closeStarted = false;
 	bool f_solvingDNS = false;
+
+	f_uploadTimerExpired = false;
+	f_heartbeatTimerExpired = false;
+	eth.HTTPuploading(false);
+	eth.HTTPheartBeating(false);
 
     for(volatile int i = 0; i < 500000; i++);
 
 //	NO DHCP	//eth.init(ip, gateway, subnet, mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB, Eth::MANUAL_CLOSE);
     eth.init(mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB, Eth::MANUAL_CLOSE);
+
+    uploadDataTimer.startTimer();
+    heartbeatTimer.startTimer();
 
     while(1){
     	eth.handler();
@@ -59,52 +68,47 @@ int main(void) {
     		f_solvingDNS = true;
     	}
 
-    	if(eth.DNSresolveFinished() && !f_openStarted){
-    		eth.socketOpen(Eth::TCP_MODE, localPort);
-    		f_openStarted = true;
+    	if(!eth.HTTPisBusy() && f_heartbeatTimerExpired){
+    		eth.HTTPheartbeat(localPort, serverPort, SERVER_HEARTBEAT_PATH, DEVICE);
+    		f_heartbeatTimerExpired = false;
+    		eth.HTTPheartBeating(true);
+    		heartbeatTimer.stopTimer();
     	}
 
-    	if(eth.socketOpened() && !f_connectStarted){
-    		eth.socketTCPconnect(serverPort);
-
-    		f_connectStarted = true;
+    	if(eth.HTTPheartbeatFinished() && !heartbeatTimer.isRunning()){
+    		eth.HTTPheartBeating(false);
+    		heartbeatTimer.startTimer();
     	}
 
-    	if(eth.socketTCPconnected()){
-    		if(!f_sendStarted){
-    			eth.socketTCPsend(txMsg2, (sizeof(txMsg2) - 1));
-    			f_sendStarted = true;
-    		}
-        	if(eth.socketSendFinished() && !f_receiveStarted){
-    			eth.socketTCPreceive(rxMsg, (sizeof(rxMsg)));
-    			f_receiveStarted = true;
-        	}
-        	if(eth.socketReceiveFinished() && eth.socketSendFinished()){
-        		f_sendStarted = false;
-        		f_receiveStarted = false;
-        		static uint16_t i = 0;
-        		i++;	//	BREAKPOINT
-        		if(i >= 10){
-        			i = 0;
-        			static uint8_t j = 0;
-        			j++;
-        			if(j >= 100){
-        				j = 0;
-        				eth.socketTCPdisconnect();
-        				f_closeStarted = true;
-        			}
-        		}
-        	}
+    	if(!eth.HTTPisBusy() && f_uploadTimerExpired){
+    		eth.HTTPuploadData(localPort, serverPort, SERVER_PATH, SERVER_DATA_PATH, DEVICE, DATA);
+    		f_uploadTimerExpired = false;
+    		eth.HTTPuploading(true);
+    		uploadDataTimer.stopTimer();
     	}
-        if(f_closeStarted && eth.socketTCPdisconnectFinished()){
-        	f_closeStarted = false;
-        	f_openStarted = false;
-        	f_connectStarted = false;
-        	f_sendStarted = false;
-        	f_receiveStarted = false;
-        	for(volatile int i = 0; i < 5000000; i++);
-        	//	BREAKPOINT
-        }
+
+    	if(eth.HTTPdataUploaded() && !uploadDataTimer.isRunning()){
+    		eth.HTTPuploading(false);
+    		uploadDataTimer.startTimer();
+    	}
+
+    	if(eth.HTTPerrorOccurred()){
+    		uploadDataTimer.stopTimer();
+    		heartbeatTimer.stopTimer();
+    		eth.HTTPrestartAfterError();
+    		f_uploadTimerExpired = false;
+    		f_heartbeatTimerExpired = false;
+    		uploadDataTimer.startTimer();
+    		heartbeatTimer.startTimer();
+    	}
     }
     return 0 ;
+}
+
+void uploadData(void){
+	f_uploadTimerExpired = true;
+}
+
+void heartbeat(void){
+	f_heartbeatTimerExpired = true;
 }

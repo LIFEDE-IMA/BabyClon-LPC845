@@ -6,6 +6,14 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  *
  * 	This class was written to handle W5500 Ethernet module with SPI peripheral
+ *
+ * 	NOTES:	Sometimes, when connecting socket TCP, SPI reads 0x19 in Sn_SR register (socket status).
+ * 			0x19 is NOT a valid option according to Wiznet datasheet, but if you read again after getting
+ * 			0x19 then you get a valid state. Not sure why this happens but added 0x19 as "transient" socket status.
+ *
+ * 			Using DNS provided by DHCP does not always resolve domain's IP.
+ * 			Cause of this, 8.8.8.8 Google's DNS is hardcoded to resolve any domain.
+ * 			(1.1.1.1 worked too when tests run)
  */
 
 #ifndef ETH_H_
@@ -193,6 +201,7 @@ class Eth : public SpiSlave{
 			SOCK_LISTEN = 0x14,
 			SOCK_SYNSENT = 0x15,
 			SOCK_ESTABLISHED = 0x17,
+			SOCK_EXCEPTION_TRANSIENT_STAT = 0x19,	//	Not valid according Wiznet datasheet, but read several times in Sn_SR
 			SOCK_CLOSE_WAIT = 0x1C,
 			SOCK_UDP = 0x22
 		};
@@ -520,24 +529,64 @@ class Eth : public SpiSlave{
 
 		//	---------------		HTTP		---------------
 
+		enum httpState_t : uint8_t{
+			HTTP_IDLE,
+			HTTP_CONNECT,
+			HTTP_SEND,
+			HTTP_RCV,
+			HTTP_CHECK,
+			HTTP_SUCCESS,
+			HTTP_FINISHED,
+			HTTP_ERROR
+		};
+
+		enum httpError_t : uint8_t{
+			HTTP_ERROR_NONE,
+			HTTP_ERROR_BUILDING,
+			HTTP_ERROR_OPEN_TIMEOUT,
+			HTTP_ERROR_CONNECT_TIMEOUT,
+			HTTP_ERROR_CONN_SOCK_CLOSED,
+			HTTP_ERROR_SEND_TIMEOUT,
+			HTTP_ERROR_RCV_TIMEOUT,
+			HTTP_ERROR_CHECK_RESPONSE,
+			HTTP_ERROR_DISCONNECT_TIMEOUT
+		};
+
+		httpState_t m_httpState;
+		httpError_t m_httpError;
+
 		static const uint16_t HTTP_MAX_RQST_LEN = 400;
 		static const uint8_t HTTP_MAX_BDY_LEN = 150;
 		static const uint8_t HTTP_MAX_SERVER_PATH_LEN = 250;
 		static const uint8_t HTTP_MAX_USR_AGENT_LEN = 50;
+		static const uint16_t HTTP_MAX_RESPONSE_LEN = 512;
 
 		char m_httpServerHost[(Eth::DNS_MAX_DOMAIN_LEN + 1)];
-		char m_httpServerPath[HTTP_MAX_SERVER_PATH_LEN];
+		char m_httpServerPath[Eth::HTTP_MAX_SERVER_PATH_LEN];
 
-		char m_httpRequest[HTTP_MAX_RQST_LEN];
+		char m_httpRequest[Eth::HTTP_MAX_RQST_LEN];
 		uint16_t m_httpRequestLen;
 
-		char m_httpBody[HTTP_MAX_BDY_LEN];
+		char m_httpBody[Eth::HTTP_MAX_BDY_LEN];
 		uint8_t m_httpBodyLen;
 
-		char m_httpUsrAgent[HTTP_MAX_USR_AGENT_LEN];
+		char m_httpUsrAgent[Eth::HTTP_MAX_USR_AGENT_LEN];
 
-		char m_httpServerDataPath[HTTP_MAX_SERVER_PATH_LEN];
+		char m_httpServerDataPath[Eth::HTTP_MAX_SERVER_PATH_LEN];
 
+		char m_httpServerResponse[Eth::HTTP_MAX_RESPONSE_LEN];
+		uint16_t m_httpServerResponseLen;
+
+		uint16_t m_httpServerPort;
+
+		bool m_httpInProgressFlag;
+		bool m_httpFinishedFlag;
+		bool m_httpHeartbeatInProgressFlag;
+		bool m_httpHeartbeatFinishedFlag;
+		bool m_httpErrorOccurred;
+
+		bool m_httpUploading_usrFlag;		//	USR API
+		bool m_httpHeartBeating_usrFlag;	//	USR API
 
 		//	-----------------------------------
 
@@ -574,6 +623,26 @@ class Eth : public SpiSlave{
 
 		void socketRequestStatus(ethState_t nextStateAfterStatusRead);	//	Sets next state after status read
 
+		void socketOpen(socketMode_t sockMode, uint16_t localPort);		//	Opens Socket, TCP / UDP Socket Mode
+		bool socketOpened() const;										//	Returns True if Socket is Opened
+		void socketTCPconnect(uint8_t remoteIP[4], uint16_t remotePort);//	Connects Socket, TCP Socket Mode
+		void socketTCPconnect(uint16_t remotePort);						//	DNS version of TCPconnect
+		bool socketTCPconnected() const;								//	Returns True if TCP Socket is Connected
+		void socketUDPsetDest(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
+		void socketUDPsetDest(uint16_t remotePort);						//	DNS version of UDPsetDest
+		bool socketUDPdestSet() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
+		void socketTCPsend(const void *buffer, uint16_t len);			//	Sends Data to Server, TCP Socket Mode
+		void socketUDPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode
+		bool socketSendFinished() const;								//	Returns True if Data was sent to Server
+		void socketTCPreceive(const void *buffer, uint16_t maxLen);		//	Receives Data from Server, TCP Socket Mode
+		void socketUDPreceive(uint8_t *buffer, uint16_t maxLen);		//	Receives Data from Server, UDP Socket Mode
+		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
+		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server
+		void socketTCPdisconnect();										//	Disconnects Socket, TCP Socket Mode
+		bool socketTCPdisconnectFinished() const;						//	Returns True if TCP Socket was Disconnected
+		void socketClose();												//	Closes Socket
+		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
+
 		void DHCPgenerateXid();		//	Generates Transaction ID for DHCP
 		void DHCPstart();			//	Starts Dynamic Host Configuration Protocol (gets local IP, Subnet & Gateway)
 		void DHCPbuildDiscover();	//	Builds DHCPDISCOVER
@@ -591,9 +660,12 @@ class Eth : public SpiSlave{
 		void DNSwaitResponse();			//	Prepares the driver before reading DNS RESPONSE
 		void DNSparseResponse();		//	Handles DNS RESPONSE and checks if its OK to end DNS operation
 
-		uint8_t HTTPbuildBody(char *data);	//	Builds body for our POST HTTP
-		uint16_t HTTPbuildRequest();		//	Builds request for out POST HTTP
-		bool HTTPbuildRequestLen();			//	Builds request len for our POST HTTP
+		uint8_t HTTPbuildBody(const char *data);			//	Builds body for our POST HTTP
+		uint16_t HTTPbuildRequest();						//	Builds request for out POST HTTP
+		void HTTPcheckResponse();							//	Checks if server response is OK
+		void HTTPuploadData();								//	Uploads data to server (POST HTTP)
+		void HTTPheartbeat();								//	Uploads heartbeat to server (POST HTTP)
+		void HTTPtimeoutError(ethState_t currentEthState);	//	Configures m_httpError when timeout occurs
 
 		void timeoutError();			//	Handles ERROR_TIMEOUT
 
@@ -620,26 +692,17 @@ class Eth : public SpiSlave{
 		void DNSresolve(const char *domain);	//	Starts DNS operation to acquire server ip
 		bool DNSresolveFinished() const;		//	Returns True if DNS operation ended
 
-		void socketOpen(socketMode_t sockMode, uint16_t localPort);		//	Opens Socket, TCP / UDP Socket Mode
-		bool socketOpened() const;										//	Returns True if Socket is Opened
-		void socketTCPconnect(uint8_t remoteIP[4], uint16_t remotePort);//	Connects Socket, TCP Socket Mode
-		void socketTCPconnect(uint16_t remotePort);						//	DNS version of TCPconnect
-		bool socketTCPconnected() const;								//	Returns True if TCP Socket is Connected
-		void socketUDPsetDest(uint8_t remoteIP[4], uint16_t remotePort);//	Sets destination IP and port in UDP Socket Mode
-		void socketUDPsetDest(uint16_t remotePort);						//	DNS version of UDPsetDest
-		bool socketUDPdestSet() const;									//	Returns True if Socket Destination IP and port was set in UDP Socket Mode
-		void socketTCPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, TCP Socket Mode
-		void socketUDPsend(uint8_t *buffer, uint16_t len);				//	Sends Data to Server, UDP Socket Mode
-		bool socketSendFinished() const;								//	Returns True if Data was sent to Server
-		void socketTCPreceive(uint8_t *buffer, uint16_t maxLen);		//	Receives Data from Server, TCP Socket Mode
-		void socketUDPreceive(uint8_t *buffer, uint16_t maxLen);		//	Receives Data from Server, UDP Socket Mode
-		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
-		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server
-		void socketTCPdisconnect();										//	Disconnects Socket, TCP Socket Mode
-		bool socketTCPdisconnectFinished() const;						//	Returns True if TCP Socket was Disconnected
-		void socketClose();												//	Closes Socket
-		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
-
+		void HTTPuploadData(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *serverDataPath, const char *device, const char *data);	//	Starts data upload to server
+		bool HTTPdataUploaded() const;		//	Returns true if data was uploaded
+		void HTTPheartbeat(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *device);	//	Sends life proof to server
+		bool HTTPheartbeatFinished() const;	//	Returns true if heartbeat was uploaded
+		void HTTPuploading(bool flag);		//	Usr sets uploading as true/false
+		bool HTTPuploading() const;			//	Returns m_httpUploading_usrFlag
+		void HTTPheartBeating(bool flag);	//	Usr sets heartBeating as true/false
+		bool HTTPheartBeating() const;		//	Returns m_httpHeartBeating_usrFlag
+		bool HTTPisBusy() const;			//	USR API
+		bool HTTPerrorOccurred() const;		//	Returns true if http had an Error
+		void HTTPrestartAfterError();		//	Prepares driver for its restart after an error occurred
 
 		void handler();			//	Non-blocking W5500 handler
 
