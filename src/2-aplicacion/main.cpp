@@ -33,13 +33,13 @@ int main(void) {
 	SysTimer uploadDataTimer(10, SysTimer::SINGLE, SysTimer::T_SEG, uploadData);
 	SysTimer heartbeatTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, heartbeat);
 
-	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x33};
+	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x20};
 
 	char SERVER[] = "cifedegss.mooo.com";
 	char SERVER_PATH[] = "/lab_server/guardar.php";
-	char SERVER_DATA_PATH[] = "/$clonLPC_pruebaEth";
-	char DEVICE[] = "monitoringLPC";
-	char DATA[] = "Hola desde LPC845 via Ethernet";
+	char SERVER_DATA_PATH[] = "/$clonLPC_1_testEth";
+	char DEVICE[] = "clonLPC_1";
+	char DATA[] = "Hola desde LPC845, en el LIFEDE, via Ethernet";
 	char SERVER_HEARTBEAT_PATH[] = "/lab_server/heartbeat.php";
 
 	uint16_t localPort = 5000;
@@ -95,6 +95,7 @@ int main(void) {
     		eth.HTTPrestartAfterError();
     		f_uploadTimerExpired = false;
     		f_heartbeatTimerExpired = false;
+    		f_solvingDNS = true;
     		uploadDataTimer.startTimer();
     		heartbeatTimer.startTimer();
     	}

@@ -653,6 +653,7 @@ class Eth : public SpiSlave{
 
 		void DNSgenerateXid();			//	Generates Transaction ID for DNS
 		void DNSbuildQuery();			//	Builds	QUERY DNS
+		void DNSsetRandomLocalPort();	//	Modifies m_localPortBuffer to be "random"
 		void DNSsetRemoteIPandPort();	//	Modifies m_remoteIPBuffer & m_remotePortBuffer
 		void DNSwaitResponse();			//	Prepares the driver before reading DNS RESPONSE
 		void DNSparseResponse();		//	Handles DNS RESPONSE and checks if its OK to end DNS operation

@@ -1196,7 +1196,7 @@ void Eth::DNSgenerateXid(){
 	m_dnsTransactionID ^= (m_mac[5] << 0);
 	m_dnsTransactionID ^= (m_ip[0] << 8);
 	m_dnsTransactionID ^= (m_ip[3] << 0);
-	m_dnsTransactionID ^= SysTimer::randomTick;
+	m_dnsTransactionID ^= (SysTimer::randomTick % 0xFFFF);
 }
 
 void Eth::DNSresolve(const char *domain){
@@ -1316,6 +1316,23 @@ void Eth::DNSbuildQuery(){
 	m_dnsQueryBuffer[m_dnsCurrentIndex++] = 0x01;
 
 	m_dnsQueryLen = m_dnsCurrentIndex;
+}
+
+void Eth::DNSsetRandomLocalPort(){
+	static uint8_t solvingNumber = 0;
+
+	solvingNumber++;
+
+	uint16_t localPort;
+
+	localPort = 0xC000 + (SysTimer::randomTick % 0xFFFF);
+	if(solvingNumber < 0xF)	localPort += (solvingNumber << 2);
+	else	localPort += (solvingNumber << 0);
+	localPort += (m_rxBuffer[5]);	//	m_rxBuffer is never cleaned so this has random value
+	localPort += (m_dnsTransactionID / (solvingNumber + 2));
+
+	m_localPortBuffer[0] = (localPort >> 8);
+	m_localPortBuffer[1] = (localPort & 0xFF);
 }
 
 void Eth::DNSsetRemoteIPandPort(){
@@ -2170,8 +2187,7 @@ void Eth::stateMachine(){
 		case ethState_t::ETH_DNS_BUILD_QUERY:
 			Eth::DNSbuildQuery();
 			if(Eth::currentError() != Eth::ERROR_DNS_INVALID_DOMAIN){
-				m_localPortBuffer[0] = 0;
-				m_localPortBuffer[1] = 0;
+				Eth::DNSsetRandomLocalPort();
 
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
 			}else{
