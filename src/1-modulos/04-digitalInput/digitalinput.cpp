@@ -13,6 +13,8 @@ DigitalInput::DigitalInput(bool port, uint8_t pin, Gpio::activeMode_t active) :
 Gpio(port, pin, Gpio::D_INPUT, active), m_active(active){
 	m_keyBuffer = 0;
 	m_counter = 0;
+	m_currentPinState = 0;
+	m_previousPinState = 1;
 }
 
 bool DigitalInput::getKey(){
@@ -24,18 +26,15 @@ bool DigitalInput::getKey(){
 }
 
 void DigitalInput::handler(){
-	bool currentState;
-	static bool previousState = 1;	//	Keeps its value through function calls
+	m_currentPinState = Gpio::getPinState();	//	1: key pressed ( gpio solves activity logic )
 
-	currentState = Gpio::getPinState();	//	1: key pressed ( gpio solves activity logic )
-
-	if((currentState == previousState) && (m_counter < MIN_SAMPLES)){
+	if((m_currentPinState == m_previousPinState) && (m_counter < MIN_SAMPLES)){
 		m_counter++;
-		if(m_counter == MIN_SAMPLES) m_keyBuffer = currentState;
-	}else if(currentState != previousState)
+		if(m_counter == MIN_SAMPLES) m_keyBuffer = m_currentPinState;
+	}else if(m_currentPinState != m_previousPinState)
 		m_counter = 0;	//	We need MIN_SAMPLES CONSECUTIVE samples with no variation
 
-	previousState = currentState;
+	m_previousPinState = m_currentPinState;
 }
 
 DigitalInput::~DigitalInput(){}

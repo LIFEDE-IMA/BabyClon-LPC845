@@ -22,8 +22,6 @@ class String{
 		void append(const char *str);				//	Concatenation
 		void append(char *str);						//	Concatenation
 
-		void uint_to_str(uint32_t val, char *str);	//	Converts uint_t to string
-
 	public:
 		enum error_type{
 			OK,
@@ -39,8 +37,11 @@ class String{
 		static void strcpy(char *dest, char *src);					//	Copies src into dest
 		static int strcmp(const char *s1, const char *s2);			//	Compares s1 with s2
 		static const char* strstr(const char *s1, const char *s2);	//  Searches s2 in s1
-		static int float2str(float data, char *buffer, int initPos = 0);		//	Converts float to string
-		static int floatVec2str(float *data, uint8_t dataSize, char *buffer);	//	Converts float vector to string
+		static const char* strstr(const char *s1, const char *s2, uint32_t s1Len);	//	Searches s2 in s1
+
+		static void uint_to_str(uint32_t val, char *str);											//	Converts uint_t to string
+		static int float2str(float data, char *buffer, int initPos = 0);							//	Converts float to string
+		static int floatVec2str(float *data, uint8_t dataSize, char *buffer, char delimiter = '$');	//	Converts float vector to string
 
 		String& operator+=(const char *str);						//	Concatenation
 		String& operator+=(char *str);								//	Concatenation

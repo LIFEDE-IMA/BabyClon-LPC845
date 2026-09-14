@@ -20,6 +20,9 @@ class DigitalInput : public TimedPeripheral, Gpio{
 		Gpio::activeMode_t m_active;
 		const uint8_t MIN_SAMPLES = 5;	//	Number of equal samples before we consider valid the signal
 
+		volatile bool m_currentPinState;
+		volatile bool m_previousPinState;
+
 	public:
 		DigitalInput(bool port, uint8_t pin, Gpio::activeMode_t active = Gpio::AM_HIGH);	//	Constructor
 

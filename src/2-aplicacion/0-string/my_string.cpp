@@ -82,6 +82,49 @@ const char* String::strstr(const char *s1, const char *s2){
     return nullptr;
 }
 
+const char* String::strstr(const char *s1, const char *s2, uint32_t s1Len){
+    if(!*s2) return s1;
+
+    uint32_t len = 0;
+
+    while(len < s1Len){
+        const char *p1 = s1;
+        const char *p2 = s2;
+
+        while(*p1 && *p2 && (*p1 == *p2)){
+            p1++;
+            p2++;
+        }
+        if(!*p2){
+            return s1;
+        }
+        s1++;
+        len++;
+    }
+    return nullptr;
+}
+
+void String::uint_to_str(uint32_t val, char *str){
+	char aux[11];			//	Max number: 2^32 - 1
+	uint8_t i = 0, j = 0;
+
+	if(val == 0){
+		str[0] = '0';
+		str[1] = '\0';
+		return;
+	}
+
+	while(val){
+		aux[i++] = ((val % 10) + '0');
+		val /= 10;
+	}
+
+	while(i--){
+		str[j++] = aux[i];
+	}
+	str[j] = '\0';
+}
+
 int String::float2str(float data, char *buffer, int initPos){
 	int len = initPos;
 	int j = 0;
@@ -121,15 +164,15 @@ int String::float2str(float data, char *buffer, int initPos){
 	return len;
 }
 
-int String::floatVec2str(float *data, uint8_t dataSize, char *buffer){
+int String::floatVec2str(float *data, uint8_t dataSize, char *buffer, char delimiter){
 	int len = 0;
 	for(uint8_t i = 0; i < dataSize; i++){
 		len = String::float2str(data[i], buffer, len);
-		buffer[len] = '&';
+		buffer[len] = delimiter;
 		len++;
 	}
 	len--;
-	buffer[len] = '\0';	//	buffer = data[0]&data[1]...&data[dataSize-1]
+	buffer[len] = '\0';	//	buffer = data[0]'delimiter'data[1]...'delimiter'data[dataSize-1]
 
 	return len;
 }
@@ -166,27 +209,6 @@ void String::append(char *str){
 	String::strcpy(m_str + m_index, str);	//	Adds str to existing m_str
 	m_index += len;
 	m_error = error_type::OK;
-}
-
-void String::uint_to_str(uint32_t val, char *str){
-	char aux[11];			//	Max number: 2^32 - 1
-	uint8_t i = 0, j = 0;
-
-	if(val == 0){
-		str[0] = '0';
-		str[1] = '\0';
-		return;
-	}
-
-	while(val){
-		aux[i++] = ((val % 10) + '0');
-		val /= 10;
-	}
-
-	while(i--){
-		str[j++] = aux[i];
-	}
-	str[j] = '\0';
 }
 
 String& String::operator +=(const char *str){

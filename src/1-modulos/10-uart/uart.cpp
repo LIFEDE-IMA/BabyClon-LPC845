@@ -1,23 +1,25 @@
-/*
- * uart.cpp
- *
- *  Created on: 6 jun. 2026
- *      Author: Mati3 - LIFEDE - UTN FRBA
- *      Consultas: mmelian@frba.utn.edu.ar
- */
-
 #include "uart.h"
 
 UART_Type* UARTS[] = {UART0, UART1, UART2, UART3, UART4};
 
-Uart *uartInstance[TOTAL_UART_SOURCES] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+Uart *uartInstance[Uart::TOTAL_UART_SOURCES] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 
-Uart::Uart(uint8_t uart) : m_uart(UARTS[uart]){
-	m_maxRxLen = MAX_RX_LEN;
+Uart::Uart(uart_t uartNumber, bool rxPort, uint8_t rxPin, bool txPort, uint8_t txPin, uint32_t baudrate, uint8_t OSRval){
+	m_uart = UARTS[uartNumber];
+
+	m_rxPort = rxPort;
+	m_rxPin = rxPin;
+	m_txPort = txPort;
+	m_txPin = txPin;
+
+	m_baudrate = baudrate;
+	m_osr = OSRval;
+
+	m_maxRxLen = Uart::MAX_RX_LEN;
 	for(uint8_t i = 0; i < m_maxRxLen; i++) m_bufferRx[i] = 0;
 	m_headRxIndex = 0;
 	m_tailRxIndex = 0;
-	m_maxTxLen = MAX_TX_LEN;
+	m_maxTxLen = Uart::MAX_TX_LEN;
 	for(uint8_t i = 0; i < m_maxTxLen; i++) m_bufferTx[i] = 0;
 	m_headTxIndex = 0;
 	m_tailTxIndex = 0;
@@ -25,86 +27,123 @@ Uart::Uart(uint8_t uart) : m_uart(UARTS[uart]){
 	m_sendPtr = nullptr;
 	m_readIndex = 0;
 
-	uartInstance[uart] = this;
+	m_headerByteSetFlag = false;
+	m_footerByteSetFlag = false;
+	m_headerByte = 0;
+	m_footerByte = 0;
+	m_headerByteSentFlag = false;
+	m_footerByteSentFlag = false;
 
-	Uart::init(uart);
+	uartInstance[uartNumber] = this;
+
+	Uart::initUart(uartNumber);
 }
 
-void Uart::init(uint8_t uart){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (Cap. 10), UART (Cap. 17)
-	SYSCON->FCLKSEL[uart] = 0x1;	//	Clk source for UARTx = main (30MHz)
+void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (Cap. 10), UART (Cap. 17)
+	SYSCON->FCLKSEL[uartNumber] = 0x1;	//	Clk source for UARTx = main (30MHz)
 
-	switch(uart){
-		case 0:
-			SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 14));	//	Enables clk for SWM, UART0
+	SYSCON->SYSAHBCLKCTRL0 |= (1 << 7);	//	Enable SWM clk
+
+	uint8_t rxPIO = (m_rxPin + (m_rxPort * 32));
+	uint8_t txPIO = (m_txPin + (m_txPort * 32));
+
+	uint8_t nvicShift = 0;		//	Uart 0
+
+	switch(uartNumber){
+		case uart_t::UART_0:
+			SYSCON->SYSAHBCLKCTRL0 |= (1 << 14);	//	Enable UART0 clk
 			//	Reset UART0
 			SYSCON->PRESETCTRL0 &= ~(1 << 14);	//	RESET UART0
-			SYSCON->PRESETCTRL0 |= (1 << 14);	//	RELEASE RESET UART0
-			//	Assign UART pins (PIO0_26 RXD, PIO0_27 TXD)
+			SYSCON->PRESETCTRL0 |= (1 << 14);	//	CLEAR RESET UART0
+			//	Assign UART0 pins
 			SWM->PINASSIGN[0] &= ~((0xFF << 0) | (0xFF << 8));
-			SWM->PINASSIGN[0] |= ((27 << 0) | (26 << 8));	//	Assigns RXD and TXD
-			//	Config UART0
-			UART0->CFG = (0 << 0);	//	Disables UART0
-			UART0->CFG |= ((1 << 2) | (0 << 4) | (0 << 6) | (0 << 9) | (0 << 11) | (0 << 15));	//	8-bit, No-parity, 1-stopBit, No-flowControl, Asincronic, No-loop
-			UART0->OSR = 0xF;	//	OSRVAL = 15
-			UART0->BRG = 194;	// BRGVAL = 194 y OSRVAL = 15 (default) => BAUDRATE = FCLK / ((OSRVAL+1)*(BRGVAL+1)) = 9615
-			UART0->INTENCLR = (1 << 0);	//	Disables RX interrupts
-			UART0->INTENSET = (1 << 0);	//	Enables RX interrupts
-			NVIC->ISER[0] = (1 << USART0_IRQn);	//	Enables NVIC interrupt
-			UART0->CFG |= (1 << 0);	//	Enables UART0
+			SWM->PINASSIGN[0] |= ((txPIO << 0) | (rxPIO << 8));	//	Assign RXD and TXD
+			nvicShift = 0;
 			break;
 
-		case 1:
-			SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 15));	//	Enables clk for SWM, UART1
+		case uart_t::UART_1:
+			SYSCON->SYSAHBCLKCTRL0 |= (1 << 15);	//	Enable UART1 clk
 			//	Reset UART1
 			SYSCON->PRESETCTRL0 &= ~(1 << 15);	//	RESET UART1
-			SYSCON->PRESETCTRL0 |= (1 << 15);	//	RELEASE RESET UART1
-			//	Assign UART pins  (PIO0_14 RXD, PIO0_15 TXD)
+			SYSCON->PRESETCTRL0 |= (1 << 15);	//	CLEAR RESET UART1
+			//	Assign UART1 pins
 			SWM->PINASSIGN[1] &= ~((0xFF << 8) | (0xFF << 16));
-			SWM->PINASSIGN[1] |= ((15 << 8) | (14 << 16));	//	Assigns RXD and TXD
-			//	Config UART1
-			UART1->CFG = (0 << 0);	//	Disables UART1
-			UART1->CFG |= ((1 << 2) | (0 << 4) | (0 << 6) | (0 << 9) | (0 << 11) | (0 << 15));	//	8-bit, No-parity, 1-stopBit, No-flowControl, Asincronic, No-loop
-			UART1->OSR = 12;	//	OSRVAL = 12
-			UART1->BRG = 19;	// BRGVAL = 19 y OSRVAL = 12 => BAUDRATE = FCLK / ((OSRVAL+1)*(BRGVAL+1)) = 115384 ~ 115200
-			UART1->INTENCLR = (1 << 0);	//	Disables RX interrupts
-			UART1->INTENSET = (1 << 0);	//	Enables RX interrupts
-			NVIC->ISER[0] = (1 << USART1_IRQn);	//	Enables NVIC interrupt
-			UART1->CFG |= (1 << 0);	//	Enables UART1
+			SWM->PINASSIGN[1] |= ((txPIO << 8) | (rxPIO << 16));	//	Assign RXD and TXD
+			nvicShift = 1;
 			break;
 
-		case 2:
-			SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 16));	//	Enables clk for SWM, UART2
+		case uart_t::UART_2:
+			SYSCON->SYSAHBCLKCTRL0 |= (1 << 16);	//	Enable UART2 clk
 			//	Reset UART2
 			SYSCON->PRESETCTRL0 &= ~(1 << 16);	//	RESET UART2
-			SYSCON->PRESETCTRL0 |= (1 << 16);	//	RELEASE RESET UART2
+			SYSCON->PRESETCTRL0 |= (1 << 16);	//	CLEAR RESET UART2
+			//	Assign UART2 pins
+			SWM->PINASSIGN[2] &= ~((0xFF << 16) | (0xFF << 24));
+			SWM->PINASSIGN[2] |= ((txPIO << 16) | (rxPIO << 24));	//	Assign RXD and TXD
+			nvicShift = 2;
 			break;
 
-		case 3:
-			SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 30));	//	Enables clk for SWM, UART3
+		case uart_t::UART_3:
+			SYSCON->SYSAHBCLKCTRL0 |= (1 << 30);	//	Enable UART3 clk
 			//	Reset UART3
 			SYSCON->PRESETCTRL0 &= ~(1 << 30);	//	RESET UART3
-			SYSCON->PRESETCTRL0 |= (1 << 30);	//	RELEASE RESET UART3
+			SYSCON->PRESETCTRL0 |= (1 << 30);	//	CLEAR RESET UART3
+			//	Assign UART3 pins
+			SWM->PINASSIGN[11] &= ~(0xFF << 24);
+			SWM->PINASSIGN[12] &= ~(0xFF << 0);
+			SWM->PINASSIGN[11] |= (txPIO << 24);	//	Assign TXD
+			SWM->PINASSIGN[12] |= (rxPIO << 0);		//	Assign RXD
+			nvicShift = 27;
 			break;
 
-		case 4:
-			SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 31));	//	Enables clk for SWM, UART4
+		case uart_t::UART_4:
+			SYSCON->SYSAHBCLKCTRL0 |= (1 << 31);	//	Enable UART4 clk
 			//	Reset UART4
 			SYSCON->PRESETCTRL0 &= ~(1 << 31);	//	RESET UART4
-			SYSCON->PRESETCTRL0 |= (1 << 31);	//	RELEASE RESET UART4
+			SYSCON->PRESETCTRL0 |= (1 << 31);	//	CLEAR RESET UART4
+			//	Assign UART4 pins
+			SWM->PINASSIGN[12] &= ~((0xFF << 16) | (0xFF << 24));
+			SWM->PINASSIGN[12] |= ((txPIO << 16) | (rxPIO << 24));	//	Assign RXD and TXD
+			nvicShift = 28;
 			break;
 
 		default:
-
 			//	ERROR
 			break;
 	}
+
+	//	UARTx config
+	m_uart->CFG = (0 << 0);		//	Disable UARTx
+	m_uart->CFG |= ((1 << 2)  |	//	8-bit
+				    (0 << 4)  |	//	No-parity
+				    (0 << 6)  |	//	1-stopBit
+				    (0 << 9)  |	//	No-flowControl
+				    (0 << 11) |	//	Asynchronous
+				    (0 << 15));	//	No-loop
+	m_uart->OSR = m_osr;	//	OSRVAL = 15
+	m_uart->BRG = ((FREQ_CLOCK / (m_baudrate * (m_osr + 1))) - 1);	// BRGVAL = 194 y OSRVAL = 15 (default) => BAUDRATE = FCLK / ((OSRVAL+1)*(BRGVAL+1)) = 9615
+
+	Uart::disableRxInt();	//	Deshabilita RX interrupts
+	Uart::disableTxInt();	//	Deshabilita TX interrupts
+	Uart::enableRxInt();	//	Habilita RX interrupts
+
+	NVIC->ISER[0] = (1 << (USART0_IRQn + nvicShift));	//	Enable NVIC interrupt
+	m_uart->CFG |= (1 << 0);	//	Enable UARTx
 }
+
+void Uart::disableRxInt(void){ m_uart->INTENCLR = (1 << 0); }
+
+void Uart::enableRxInt(void){ m_uart->INTENSET = (1 << 0); }
+
+void Uart::disableTxInt(void){ m_uart->INTENCLR = (1 << 2); }
+
+void Uart::enableTxInt(void){ m_uart->INTENSET = (1 << 2); }
 
 void Uart::pushRx(uint8_t data){	//	ISR pushes data into rx buffer
 	uint32_t nextIndex = (m_tailRxIndex + 1) % m_maxRxLen;
 
-	if(nextIndex == m_headRxIndex){	//	When msg >> TxBuffer, Tx Interrupts cant empty faster than pushTx loads => Overrun
-			return;
+	if(nextIndex == m_headRxIndex){	//	When msg >> RxBuffer, Rx Interrupts can load faster than popRx empties => Overrun
+		return;
 	}else{
 		m_bufferRx[m_tailRxIndex] = data;
 		m_tailRxIndex++;
@@ -145,42 +184,99 @@ bool Uart::popTx(uint8_t *data){	//	ISR pops data from tx buffer
 	return false;
 }
 
-bool Uart::sendStr(const char *msg){
-	if(msg != nullptr && m_sendPtr == nullptr) m_sendPtr = msg;
+void Uart::setHeaderByte(uint8_t headerByte){
+	m_headerByteSetFlag = true;
+	m_headerByte = headerByte;
+}
 
-	if(!m_sendPtr) return true;
+void Uart::setFooterByte(uint8_t footerByte){
+	m_footerByteSetFlag = true;
+	m_footerByte = footerByte;
+}
+
+void Uart::sendHeaderByte(void){
+	if(Uart::pushTx(m_headerByte)){	//	Pushes header byte into Tx buffer
+		if(!m_flagTx){
+			m_flagTx = true;	//	Writing Tx buffer
+			Uart::enableTxInt();
+		}
+	}
+	m_headerByteSentFlag = true;
+}
+
+void Uart::sendFooterByte(void){
+	if(Uart::pushTx(m_footerByte)){	//	Pushes footer byte into Tx buffer
+		if(!m_flagTx){
+			m_flagTx = true;	//	Writing Tx buffer
+			Uart::enableTxInt();
+		}
+	}
+	m_footerByteSentFlag = true;
+}
+
+int16_t Uart::receiveByte(void){
+	uint8_t data = 0;
+
+	if(Uart::popRx(&data)){
+		return data;
+	}
+	return -1;
+}
+
+bool Uart::sendStr(const char *msg){
+	if(msg != nullptr && m_sendPtr == nullptr)
+		m_sendPtr = msg;
+
+	if(!m_sendPtr)
+		return true;
+
+	if(m_headerByteSetFlag){
+		if(!m_headerByteSentFlag){
+			Uart::sendHeaderByte();
+			return false;
+		}
+	}
 
 	if(*m_sendPtr){
 		if(Uart::pushTx(*m_sendPtr)){	//	Pushes one char into Tx buffer
 			m_sendPtr++;				//	Next string position
 		}
-	}else{
+	}else{	//	Finished string (*m_sendPtr = '\0')
+		if(m_footerByteSetFlag){
+			if(!m_footerByteSentFlag){
+				Uart::sendFooterByte();
+				return false;
+			}
+		}
 		m_sendPtr = nullptr;
+		m_headerByteSentFlag = false;
+		m_footerByteSentFlag = false;
 		return true;
 	}
 
 	if(!m_flagTx){
 		m_flagTx = true;	//	Writing Tx buffer
-		m_uart->INTENSET = (1 << 2);	//	Enable Tx Interrupt
+		Uart::enableTxInt();
 	}
+
 	return false;
 }
 
-uint8_t Uart::readStr(char *msg, uint32_t maxLen){
+int16_t Uart::readStr(char *readBuff, uint32_t maxLen){
 	uint8_t data = 0;
 
 	if(Uart::popRx(&data)){
 		if(m_readIndex < maxLen - 1){
-			msg[m_readIndex++] = data;	//	Writes read buffer
+			readBuff[m_readIndex++] = data;	//	Writes read buffer
 		}
 
 		if((m_readIndex >= maxLen - 1) || (data == 0)){
 			data = m_readIndex;
 			m_readIndex = 0;
-			return data;
+			return data;	//	Returns received len (if '\0' was before maxLen)
 		}
 	}
-	return 0;
+	return -1;	//	Nothing was received, return -1
 }
 
 void Uart::isrHandler(){
@@ -188,21 +284,22 @@ void Uart::isrHandler(){
 	uint8_t data;
 	bool f_txSuccess;
 
-	if(stat & (1 << 0)){	//	RXRDY
-		data = ( uint8_t )m_uart->RXDAT;
+	if(stat & Uart::RXRDY){	//	RXRDY
+		data = (uint8_t)m_uart->RXDAT;
 		Uart::pushRx(data);	//	Saves RXDAT in rx buffer so it can be read later
 	}
-	if(stat & (1 << 2)){	//	TXRDY
+	if(stat & Uart::TXRDY){	//	TXRDY
 		f_txSuccess = Uart::popTx(&data);	//	Reads tx buffer and loads data with its content
 
 		if(f_txSuccess){
 			m_uart->TXDAT = data;	//	Sends data
 		}else{	//	Tried to read faster than wrote
-			m_uart->INTENCLR = (1 << 2);	//	Disables Tx Interrupt
+			Uart::disableTxInt();
 			m_flagTx = false;
 		}
 	}
 }
+
 
 void UART0_IRQHandler(void){
 	if(uartInstance[0]) uartInstance[0]->isrHandler();
@@ -215,6 +312,7 @@ void UART1_IRQHandler(void){
 void UART2_IRQHandler(void){
 	if(uartInstance[2]) uartInstance[2]->isrHandler();
 }
+
 
 Uart::~Uart(){}
 
