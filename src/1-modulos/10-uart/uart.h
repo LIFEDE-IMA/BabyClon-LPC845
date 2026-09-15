@@ -1,3 +1,11 @@
+/*
+ * uart.h
+ *
+ *  Created on: 6 jun. 2026
+ *      Author: Mati3 - LIFEDE - UTN FRBA
+ *      Consultas: mmelian@frba.utn.edu.ar
+ */
+
 #ifndef UART_H_
 #define UART_H_
 

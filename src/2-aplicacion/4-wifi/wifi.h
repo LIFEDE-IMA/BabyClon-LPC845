@@ -1,3 +1,14 @@
+/*
+ * wifi.h
+ *
+ *  Created on: 6 jun. 2026
+ *      Author: Mati3 - LIFEDE - UTN FRBA
+ *      Consultas: mmelian@frba.utn.edu.ar
+ *
+ *  This code was written to handle ESP8266 with the LPC845, being ESP8266 the wifi module
+ *  The protocol chosen to communicate with the server was POST PROTOCOL
+ */
+
 #ifndef WIFI_H_
 #define WIFI_H_
 

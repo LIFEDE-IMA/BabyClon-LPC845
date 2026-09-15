@@ -1,3 +1,11 @@
+/*
+ * uart.cpp
+ *
+ *  Created on: 6 jun. 2026
+ *      Author: Mati3 - LIFEDE - UTN FRBA
+ *      Consultas: mmelian@frba.utn.edu.ar
+ */
+
 #include "uart.h"
 
 UART_Type* UARTS[] = {UART0, UART1, UART2, UART3, UART4};
