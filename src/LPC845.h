@@ -290,6 +290,98 @@ typedef struct{
 #define CTIMER0 ((CTIMER_Type *) 0x40038000u)
 
 typedef struct {
+	volatile uint32_t CFG;				//	SCT Configuration Register
+	struct {
+		volatile uint16_t CTRL_L;		//	SCT Control Register Low Counter 16bit
+		volatile uint16_t CTRL_H;		//	SCT Control Register High Counter 16bit
+	} CTRL;
+	struct {
+		volatile uint16_t LIMIT_L;		//	SCT Limit Event Select Register	Low Counter 16bit
+		volatile uint16_t LIMIT_H;		//	SCT Limit Event Select Register	High Counter 16bit
+	} LIMIT;
+	struct {
+		volatile uint16_t HALT_L;		//	SCT Halt Event Select Register Low Counter 16bit
+		volatile uint16_t HALT_H;		//	SCT Halt Event Select Register High Counter 16bit
+	} HALT;
+	struct {
+		volatile uint16_t STOP_L;		//	SCT Stop Event Select Register Low Counter 16bit
+		volatile uint16_t STOP_H;		//	SCT Stop Event Select Register High Counter 16bit
+	} STOP;
+	struct {
+		volatile uint16_t START_L;		//	SCT Start Event Select Register Low Counter 16bit
+		volatile uint16_t START_H;		//	SCT Start Event Select Register High Counter 16bit
+	} START;
+			 uint32_t RESERVED_0[10];
+	struct {
+		volatile uint16_t COUNT_L;		//	SCT Counter Register Low Counter 16bit
+		volatile uint16_t COUNT_H;		//	SCT Counter Register High Counter 16bit
+	} COUNT;
+	struct{
+		volatile uint16_t STATE_L;		//	SCT State Register Low Counter 16bit
+		volatile uint16_t STATE_H;		//	SCT State Register High Counter 16bit
+	} STATE;
+	volatile uint32_t INPUT;			//	SCT Input Register
+	struct {
+		volatile uint16_t REGMODE_L;	//	SCT Match/Capture Register Low Counter 16bit
+		volatile uint16_t REGMODE_H;	//	SCT Match/Capture Register High Counter 16bit
+	} REGMODE;
+	volatile uint32_t OUTPUT;			//	SCT Output Register
+	volatile uint32_t OUTPUTDIRCTRL;	//	SCT Output Counter Direction Control Register
+	volatile uint32_t RES;				//	SCT Conflict Resolution Register
+	volatile uint32_t DMAREQ[2];		//	SCT DMA Request 0 and 1
+			 uint32_t RESERVED_1[35];
+	volatile uint32_t EVEN;				//	SCT Event Interrupt Enable Register
+	volatile uint32_t EVFLAG;			//	SCT Event Flag Register
+	volatile uint32_t CONEN;			//	SCT Conflict Interrupt Enable Register
+	volatile uint32_t CONFLAG;			//	SCT Conflict Flag Register
+	union {
+		struct {
+			volatile uint16_t MATCH_L;	//	SCT Match Value Register Of Match Channels 0-7; Low Counter 16bit; REGMODE0_L to REGMODE7_L = 0
+			volatile uint16_t MATCH_H;	//	SCT Match Value Register Of Match Channels 0-7; High Counter 16bit; REGMODE0_H to REGMODE7_H = 0
+		};
+		struct {
+			volatile uint16_t CAP_L;	//	SCT Capture Register Of Capture Channels 0-7; Low Counter 16bit; REGMODE0_L to REGMODE7_L = 1
+			volatile uint16_t CAP_H;	//	SCT Capture Register Of Capture Channels 0-7; High Counter 16bit; REGMODE0_H to REGMODE7_H = 1
+		};
+	} MATCH_CAP[8];
+			 uint32_t RESERVED_2[56];
+	union {
+		struct {
+			volatile uint16_t MATCHREL_L;	//	SCT Match Reload Value Register 0-7; Low Counter 16bit; REGMODE0_L to REGMODE7_L = 0
+			volatile uint16_t MATCHREL_H;	//	SCT Match Reload Value Register 0-7; High Counter 16bit; REGMODE0_H to REGMODE7_H = 0
+		};
+		struct {
+			volatile uint16_t CAPCTRL_L;	//	SCT Capture Control Register 0-7; Low Counter 16bit; REGMODE0_L to REGMODE7_L = 1
+			volatile uint16_t CAPCTRL_H;	//	SCT Capture Control Register 0-7; High Counter 16bit; REGMODE0_H to REGMODE7_H = 1
+		};
+	} MATCHREL_CAPCTRL[8];
+			 uint32_t RESERVED_3[56];
+	struct {
+		volatile uint32_t STATE;		//	SCT Event State Register 0-7
+		volatile uint32_t CTRL;			//	SCT Event Control Register 0-7
+	} EV[8];
+			 uint32_t RESERVED_4[64];
+	struct {
+		volatile uint32_t SET;			//	SCT Output Set Register 0-6
+		volatile uint32_t CLR;			//	SCT Output Clear Register 0-6
+	} OUT[7];
+
+
+} SCTIMER_Type;
+
+#define SCT ((SCTIMER_Type *) 0x50004000u)
+
+typedef struct{
+	volatile uint32_t DMA_INMUX[2];		//	Input Mux Register for DMA Trigger. Selects from 25 DMA Trigger Outputs
+			 uint32_t RESERVED_0[6];
+	volatile uint32_t SCT_INMUX[4];		//	Input Mux Register for SCT Input 0-3
+			 uint32_t RESERVED_1[4];
+	volatile uint32_t DMA_ITRIG[25];	//	Input Mux Register for Trigger Inputs 0-12 Connected to DMA Channel 0-25. Selects from ADC, SCT, ACMP, PININT, CTIMER and DMA Requests
+} INMUX_Type;
+
+#define INMUX ((INMUX_Type *) 0x4002C000u)
+
+typedef struct {
 	volatile uint32_t CFG; 		// SPI Configuration register
 	volatile uint32_t DLY; 		// SPI Delay register
 	volatile uint32_t STAT; 	// SPI Status. Some status flags can be cleared by writing a 1 to that bit position
