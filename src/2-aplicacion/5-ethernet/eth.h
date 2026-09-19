@@ -363,6 +363,8 @@ class Eth : public SpiSlave{
 		uint16_t m_rxBufferMask;
 
 		socketStat_t m_socketStat;
+		bool m_socketStatusRead_flag;
+		bool m_usrAskedStatus_flag;
 		uint8_t m_socketStatusByte;
 		ethState_t m_nextStateAfterStatusRead;
 
@@ -686,6 +688,8 @@ class Eth : public SpiSlave{
 				  opMode_t opMode = opMode_t::VAR_DATA_LEN);	//	Initializes W5500 Module with DHCP
 
 		bool isLinkUp();						//	Returns True if Link is Up (Electrical Connection between W5500 and Router)
+		void socketRequestStatus();				//	Starts Socket Status read
+		bool socketStatusRead();				//	Returns True if Socket Status was read
 		socketStat_t socketStatus() const;		//	Returns Socket Status
 		bool isReady() const;					//	Return true if eth can make an operation
 		ethErrorStat_t currentError() const;	//	Returns Socket Current Error Stat

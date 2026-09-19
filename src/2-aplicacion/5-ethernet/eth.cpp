@@ -50,6 +50,8 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_httpHeartBeating_usrFlag = false;
 	m_currentConfigStat = configState_t::CONFIG_NONE;
 	m_socketStat = socketStat_t::SOCK_CLOSED;
+	m_socketStatusRead_flag = false;
+	m_usrAskedStatus_flag = false;
 	m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
 	m_ethState = ethState_t::ETH_IDLE;
 	m_ethError = ethErrorStat_t::ERROR_NONE;
@@ -366,10 +368,27 @@ bool Eth::isLinkUp(){
 	return (PHY & 0x01);
 }
 
+bool Eth::socketStatusRead(){
+	if(m_socketStatusRead_flag){
+		m_socketStatusRead_flag = false;
+		return !m_socketStatusRead_flag;
+	}
+	return false;
+}
+
 Eth::socketStat_t Eth::socketStatus() const{ return m_socketStat; }
 
 void Eth::socketRequestStatus(ethState_t nextStateAfterStatusRead){
+	m_socketStatusRead_flag = false;
+	m_usrAskedStatus_flag = false;
     m_nextStateAfterStatusRead = nextStateAfterStatusRead;
+    m_ethState = ethState_t::ETH_SOCKET_STATUS_READ;
+}
+
+void Eth::socketRequestStatus(){
+	m_socketStatusRead_flag = false;
+	m_usrAskedStatus_flag = true;
+    m_nextStateAfterStatusRead = ethState_t::ETH_IDLE;
     m_ethState = ethState_t::ETH_SOCKET_STATUS_READ;
 }
 
@@ -1196,7 +1215,7 @@ void Eth::DNSgenerateXid(){
 	m_dnsTransactionID ^= (m_mac[5] << 0);
 	m_dnsTransactionID ^= (m_ip[0] << 8);
 	m_dnsTransactionID ^= (m_ip[3] << 0);
-	m_dnsTransactionID ^= (SysTimer::randomTick % 0xFFFF);
+	m_dnsTransactionID ^= (uint16_t)SysTimer::randomTick;
 }
 
 void Eth::DNSresolve(const char *domain){
@@ -1325,11 +1344,11 @@ void Eth::DNSsetRandomLocalPort(){
 
 	uint16_t localPort;
 
-	localPort = 0xC000 + (SysTimer::randomTick % 0xFFFF);
+	localPort = 0xC000 + (SysTimer::randomTick % 0x3FFF);
 	if(solvingNumber < 0xF)	localPort += (solvingNumber << 2);
 	else	localPort += (solvingNumber << 0);
-	localPort += (m_rxBuffer[5]);	//	m_rxBuffer is never cleaned so this has random value
-	localPort += (m_dnsTransactionID / (solvingNumber + 2));
+	localPort += (m_rxBuffer[17]);	//	m_rxBuffer is never cleaned so this has random value
+	localPort += ((m_dnsTransactionID % 0xFF) / (solvingNumber + 2));
 
 	m_localPortBuffer[0] = (localPort >> 8);
 	m_localPortBuffer[1] = (localPort & 0xFF);
@@ -1574,11 +1593,11 @@ uint16_t Eth::HTTPbuildRequest(){
 	request += m_httpBody;
 
 	if(request.getError() == String::OK){
-			m_httpRequestLen = request.getLen();
-		}else{
-			m_httpRequest[0] = '\0';
-			m_httpRequestLen = 0;
-		}
+		m_httpRequestLen = request.getLen();
+	}else{
+		m_httpRequest[0] = '\0';
+		m_httpRequestLen = 0;
+	}
 
 	return m_httpRequestLen;
 /*	REQUEST:
@@ -2187,7 +2206,8 @@ void Eth::stateMachine(){
 		case ethState_t::ETH_DNS_BUILD_QUERY:
 			Eth::DNSbuildQuery();
 			if(Eth::currentError() != Eth::ERROR_DNS_INVALID_DOMAIN){
-				Eth::DNSsetRandomLocalPort();
+				m_localPortBuffer[0] = 0;
+				m_localPortBuffer[1] = 0;
 
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
 			}else{
@@ -2240,6 +2260,10 @@ void Eth::stateMachine(){
 		case ethState_t::ETH_SOCKET_STATUS_WAIT_READ:
 			if(m_socketTransferDone){
 				m_socketStat = (socketStat_t)m_socketStatusByte;
+				if(m_usrAskedStatus_flag){
+					m_usrAskedStatus_flag = false;
+					m_socketStatusRead_flag = true;
+				}
 				m_ethState = m_nextStateAfterStatusRead;
 			}
 			break;
