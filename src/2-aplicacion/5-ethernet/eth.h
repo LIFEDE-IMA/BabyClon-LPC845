@@ -353,6 +353,9 @@ class Eth : public SpiSlave{
 		ethErrorStat_t m_ethError;
 		ethState_t m_ethStateWhenLastError;
 		socketMode_t m_socketMode;
+		ethState_t m_ethStateAfterClose;
+
+		bool m_closeAfterErrorPendingFlag;
 
 		SysTimer m_timeoutTimer;	//	To avoid blocking states
 		bool m_timeoutFlag;
@@ -638,6 +641,7 @@ class Eth : public SpiSlave{
 		uint16_t socketReceivedLen() const;								//	Returns Size of Data Received from Server
 		bool socketReceiveFinished() const;								//	Returns True if Data was received from Server
 		void socketTCPdisconnect();										//	Disconnects Socket, TCP Socket Mode
+		void socketTCPclose();											//	Closes Socket, TCP Socket Mode
 		bool socketTCPdisconnectFinished() const;						//	Returns True if TCP Socket was Disconnected
 		void socketClose();												//	Closes Socket
 		bool socketCloseFinished() const;								//	Returns True if Socket was Closed
@@ -659,6 +663,8 @@ class Eth : public SpiSlave{
 		void DNSsetRemoteIPandPort();	//	Modifies m_remoteIPBuffer & m_remotePortBuffer
 		void DNSwaitResponse();			//	Prepares the driver before reading DNS RESPONSE
 		void DNSparseResponse();		//	Handles DNS RESPONSE and checks if its OK to end DNS operation
+
+		uint16_t randomLocalPort(void);	//	Returns Random Valid Local Port (0xC000 to 0xFFFF)
 
 		uint8_t HTTPbuildBody(const char *data);			//	Builds body for our POST HTTP
 		uint16_t HTTPbuildRequest();						//	Builds request for out POST HTTP
@@ -699,8 +705,10 @@ class Eth : public SpiSlave{
 		bool DNSresolveFinished() const;		//	Returns True if DNS operation ended
 
 		void HTTPuploadData(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *serverDataPath, const char *device, const char *data);	//	Starts data upload to server
+		void HTTPuploadData(uint16_t serverPort, const char *serverPath, const char *serverDataPath, const char *device, const char *data);						//	Starts data upload to server (with random local port)
 		bool HTTPdataUploaded() const;		//	Returns true if data was uploaded
 		void HTTPheartbeat(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *device);	//	Sends life proof to server
+		void HTTPheartbeat(uint16_t serverPort, const char *serverPath, const char *device);	//	Sends life proof to server (with random local port)
 		bool HTTPheartbeatFinished() const;	//	Returns true if heartbeat was uploaded
 		void HTTPuploading(bool flag);		//	Usr sets uploading as true/false
 		bool HTTPuploading() const;			//	Returns m_httpUploading_usrFlag

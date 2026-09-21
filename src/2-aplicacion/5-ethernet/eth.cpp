@@ -56,6 +56,8 @@ Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Sp
 	m_ethState = ethState_t::ETH_IDLE;
 	m_ethError = ethErrorStat_t::ERROR_NONE;
 	m_ethStateWhenLastError = ethState_t::ETH_IDLE;
+	m_ethStateAfterClose = ethState_t::ETH_IDLE;
+	m_closeAfterErrorPendingFlag = false;
 }
 
 void Eth::transferBlock(uint16_t addr, block_t block, rwMode_t rwMode, uint8_t *data, uint16_t len, volatile bool *f_done, opMode_t opMode){
@@ -406,9 +408,15 @@ void Eth::timeoutError(){
 	m_ethStateWhenLastError = m_ethState;
 
 	if(m_httpInProgressFlag){
+		m_closeAfterErrorPendingFlag = true;
 		Eth::HTTPtimeoutError(m_ethStateWhenLastError);
 		if(m_ethState == ethState_t::ETH_SOCKET_DISCONNECT_CHECK_STATUS)
 			return;	//	If disconnect is required, keep ethState for that
+	}
+
+	if(m_dnsInProgressFlag){
+		m_dnsInProgressFlag = false;
+		m_closeAfterErrorPendingFlag = true;
 	}
 
 	m_ethState = ethState_t::ETH_IDLE;
@@ -614,6 +622,18 @@ void Eth::socketTCPdisconnect(){
 	m_ethState = ethState_t::ETH_SOCKET_DISCONNECT_WRITE_COMMAND;
 }
 
+void Eth::socketTCPclose(){
+	if(!Eth::isReady() || (m_socketMode != socketMode_t::TCP_MODE) || (Eth::socketStatus() == socketStat_t::SOCK_CLOSED))
+		return;
+
+	if(m_timeoutTimer.isRunning())
+		m_timeoutTimer.stopTimer();
+
+	m_ethError = ethErrorStat_t::ERROR_NONE;
+	m_ethStateAfterClose = ethState_t::ETH_IDLE;
+	m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
+}
+
 bool Eth::socketTCPdisconnectFinished() const{
 	return ((!Eth::isBusy()) && (Eth::socketStatus() == socketStat_t::SOCK_CLOSED));
 }
@@ -632,6 +652,7 @@ void Eth::socketClose(){
 		m_destinationSetFlag = false;
 
 	m_ethError = ethErrorStat_t::ERROR_NONE;
+	m_ethStateAfterClose = ethState_t::ETH_IDLE;
 	m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
 }
 
@@ -1240,15 +1261,15 @@ void Eth::DNSresolve(const char *domain){
 
 /*	DNS provided by DHCP is not working in W5500 (idk why???)
  	But this below should be working. Meanwhile, hardcoding Google's DNS
-
+*/
  	if(aux == 0)	//	If DNS was NOT in DHCPOFFER, we use google's 8.8.8.8
 		for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = 8;
 	else
 		for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = m_dhcpDNS[i];
-*/
+
 
 	//	Using Google's DNS (till I find why provided by DHCP isnt working)
-	for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = 8;
+//	for(uint8_t i = 0; i < 4; i++)	m_dnsServerIP[i] = 8;
 
 	for(uint16_t i = 0; i < Eth::DNS_BUFFER_LEN; i++)	m_dnsQueryBuffer[i] = 0;
 
@@ -1342,13 +1363,15 @@ void Eth::DNSsetRandomLocalPort(){
 
 	solvingNumber++;
 
-	uint16_t localPort;
+	uint32_t portAccum = 0xC000;
 
-	localPort = 0xC000 + (SysTimer::randomTick % 0x3FFF);
-	if(solvingNumber < 0xF)	localPort += (solvingNumber << 2);
-	else	localPort += (solvingNumber << 0);
-	localPort += (m_rxBuffer[17]);	//	m_rxBuffer is never cleaned so this has random value
-	localPort += ((m_dnsTransactionID % 0xFF) / (solvingNumber + 2));
+	portAccum += (SysTimer::randomTick % 0x3FFF);
+	if(solvingNumber < 0xF)	portAccum += (solvingNumber << 2);
+	else	portAccum += (solvingNumber << 0);
+	portAccum += (m_rxBuffer[17]);	//	m_rxBuffer is never cleaned so this has random value
+	portAccum += ((m_dnsTransactionID % 0xFF) / (solvingNumber + 2));
+
+	uint16_t localPort = (0xC000 + ((portAccum - 0xC000) % 0x4000));	//	Keeps localPort in valid range 0xC000 - 0xFFFF
 
 	m_localPortBuffer[0] = (localPort >> 8);
 	m_localPortBuffer[1] = (localPort & 0xFF);
@@ -1546,6 +1569,24 @@ void Eth::DNSparseResponse(){
 
 bool Eth::DNSresolveFinished() const{ return (Eth::isReady() && m_dnsFinishedFlag); }
 
+uint16_t Eth::randomLocalPort(){
+	static uint8_t solvingNumber = 0;
+
+	solvingNumber++;
+
+	uint32_t portAccum = 0xC000;
+
+	portAccum += (SysTimer::randomTick % 0x3FFF);
+	if(solvingNumber < 0xF)	portAccum += (solvingNumber << 2);
+	else	portAccum += (solvingNumber << 0);
+	portAccum += (m_rxBuffer[17]);	//	m_rxBuffer is never cleaned so this has random value
+	portAccum += (((m_localPortBuffer[0] + m_localPortBuffer[1]) % 0xFF) / (solvingNumber + 2));
+
+	uint16_t localPort = (0xC000 + ((portAccum - 0xC000) % 0x4000));	//	Keeps localPort in valid range 0xC000 - 0xFFFF
+
+	return localPort;
+}
+
 uint8_t Eth::HTTPbuildBody(const char *data){
 	String body(m_httpBody, Eth::HTTP_MAX_BDY_LEN);
 
@@ -1667,6 +1708,47 @@ void Eth::HTTPuploadData(uint16_t localPort, uint16_t serverPort, const char *se
 	}
 }
 
+void Eth::HTTPuploadData(uint16_t serverPort, const char *serverPath, const char *serverDataPath, const char *device, const char *data){
+	if(Eth::HTTPerrorOccurred() || 	m_httpHeartbeatInProgressFlag)
+		return;
+
+	m_httpInProgressFlag = true;
+	m_httpFinishedFlag = false;
+	m_httpErrorOccurred = false;
+
+	for(uint8_t i = 0; i < (Eth::DNS_MAX_DOMAIN_LEN + 1); i++)	m_httpServerHost[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RQST_LEN; i++)	m_httpRequest[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_BDY_LEN; i++)	m_httpBody[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_USR_AGENT_LEN; i++)	m_httpUsrAgent[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerDataPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RESPONSE_LEN; i++)	m_httpServerResponse[i] = 0;
+
+	String::strcpy(m_httpServerHost, m_dnsDomain);
+	String::strcpy(m_httpServerPath, serverPath);
+	String::strcpy(m_httpServerDataPath, serverDataPath);
+	String::strcpy(m_httpUsrAgent, device);
+
+	m_httpServerPort = serverPort;
+	m_httpServerResponseLen = 0;
+	m_httpBodyLen = 0;
+	m_httpRequestLen = 0;
+
+	m_httpError = httpError_t::HTTP_ERROR_NONE;
+
+	Eth::HTTPbuildBody(data);
+	Eth::HTTPbuildRequest();
+
+	if((m_httpBodyLen != 0) && (m_httpRequestLen != 0)){
+		uint16_t localPort = Eth::randomLocalPort();
+		Eth::socketOpen(Eth::TCP_MODE, localPort);
+		m_httpState = httpState_t::HTTP_CONNECT;
+	}else{
+		m_httpState = httpState_t::HTTP_ERROR;
+		m_httpError = httpError_t::HTTP_ERROR_BUILDING;
+	}
+}
+
 bool Eth::HTTPdataUploaded() const{ return m_httpFinishedFlag; }
 
 void Eth::HTTPheartbeat(uint16_t localPort, uint16_t serverPort, const char *serverPath, const char *device){
@@ -1706,6 +1788,46 @@ void Eth::HTTPheartbeat(uint16_t localPort, uint16_t serverPort, const char *ser
 		m_httpError = httpError_t::HTTP_ERROR_BUILDING;
 	}
 }
+
+void Eth::HTTPheartbeat(uint16_t serverPort, const char *serverPath, const char *device){
+	if(Eth::HTTPerrorOccurred() || m_httpInProgressFlag)
+		return;
+
+	m_httpInProgressFlag = true;
+	m_httpFinishedFlag = false;
+	m_httpHeartbeatInProgressFlag = true;
+	m_httpHeartbeatFinishedFlag = false;
+	m_httpErrorOccurred = false;
+
+	for(uint8_t i = 0; i < (Eth::DNS_MAX_DOMAIN_LEN + 1); i++)	m_httpServerHost[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_SERVER_PATH_LEN; i++)	m_httpServerPath[i] = 0;
+	for(uint16_t i = 0; i < Eth::HTTP_MAX_RQST_LEN; i++)	m_httpRequest[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_BDY_LEN; i++)	m_httpBody[i] = 0;
+	for(uint8_t i = 0; i < Eth::HTTP_MAX_USR_AGENT_LEN; i++)	m_httpUsrAgent[i] = 0;
+
+	String::strcpy(m_httpServerHost, m_dnsDomain);
+	String::strcpy(m_httpServerPath, serverPath);
+	String::strcpy(m_httpUsrAgent, device);
+
+	m_httpServerPort = serverPort;
+	m_httpBodyLen = 0;
+	m_httpRequestLen = 0;
+
+	m_httpError = httpError_t::HTTP_ERROR_NONE;
+
+	Eth::HTTPbuildBody(nullptr);	//	Builds body for heartbeat
+	Eth::HTTPbuildRequest();
+
+	if((m_httpBodyLen != 0) && (m_httpRequestLen != 0)){
+		uint16_t localPort = Eth::randomLocalPort();
+		Eth::socketOpen(Eth::TCP_MODE, localPort);
+		m_httpState = httpState_t::HTTP_CONNECT;
+	}else{
+		m_httpState = httpState_t::HTTP_ERROR;
+		m_httpError = httpError_t::HTTP_ERROR_BUILDING;
+	}
+}
+
 
 bool Eth::HTTPerrorOccurred() const{ return m_httpErrorOccurred; }
 
@@ -1836,6 +1958,8 @@ void Eth::HTTPheartbeat(){
 	}
 }
 
+
+
 void Eth::HTTPtimeoutError(ethState_t currentEthState){
 	switch(currentEthState){
 		case ethState_t::ETH_SOCKET_OPEN_CHECK_STATUS:
@@ -1851,19 +1975,16 @@ void Eth::HTTPtimeoutError(ethState_t currentEthState){
 		case ethState_t::ETH_SOCKET_SEND_TCP_WAIT_TX_FSR:
 			m_httpError = httpError_t::HTTP_ERROR_SEND_TIMEOUT;
 			m_httpState = httpState_t::HTTP_ERROR;
-			Eth::socketTCPdisconnect();
 			break;
 
 		case ethState_t::ETH_SOCKET_SEND_WAIT_READ_INTERRUPT_STAT:
 			m_httpError = httpError_t::HTTP_ERROR_SEND_TIMEOUT;
 			m_httpState = httpState_t::HTTP_ERROR;
-			Eth::socketTCPdisconnect();
 			break;
 
 		case ethState_t::ETH_SOCKET_RCV_WAIT_READ_RX_RSR:
 			m_httpError = httpError_t::HTTP_ERROR_RCV_TIMEOUT;
 			m_httpState = httpState_t::HTTP_ERROR;
-			Eth::socketTCPdisconnect();
 			break;
 
 		case ethState_t::ETH_SOCKET_DISCONNECT_CHECK_STATUS:
@@ -2080,7 +2201,11 @@ void Eth::stateMachine(){
 
 	switch(m_ethState){
 		case ethState_t::ETH_IDLE:
-			if(m_socketCloseMode == socketCloseMode_t::AUTO_CLOSE && !m_transferInProgressFlag){
+			if(m_closeAfterErrorPendingFlag && !m_transferInProgressFlag){
+				m_closeAfterErrorPendingFlag = false;
+				m_ethStateAfterClose = ethState_t::ETH_IDLE;
+				m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
+			}else if(m_socketCloseMode == socketCloseMode_t::AUTO_CLOSE && !m_transferInProgressFlag){
 				Eth::socketRequestStatus(ethState_t::ETH_SOCKET_STATUS_CHECK);
 			}
 			break;
@@ -2187,7 +2312,8 @@ void Eth::stateMachine(){
 					 !m_dhcpSubnetFound_flag){
 				m_ethState = ethState_t::ETH_DHCP_WAIT_ACK;	//	Gateway & DNS can be (or not) inside DHCPACK
 			}else{
-				m_ethState = ethState_t::ETH_DHCP_FINISHED;
+				m_ethStateAfterClose = ethState_t::ETH_DHCP_FINISHED;
+				m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
 			}
 			break;
 
@@ -2206,8 +2332,9 @@ void Eth::stateMachine(){
 		case ethState_t::ETH_DNS_BUILD_QUERY:
 			Eth::DNSbuildQuery();
 			if(Eth::currentError() != Eth::ERROR_DNS_INVALID_DOMAIN){
-				m_localPortBuffer[0] = 0;
-				m_localPortBuffer[1] = 0;
+				Eth::DNSsetRandomLocalPort();
+				//m_localPortBuffer[0] = 0;
+				//m_localPortBuffer[1] = 0;
 
 				m_ethState = ethState_t::ETH_SOCKET_OPEN_WRITE_MODE;
 			}else{
@@ -2236,9 +2363,11 @@ void Eth::stateMachine(){
 			Eth::DNSparseResponse();
 			if(m_dnsParseState == dnsParseState_t::DNS_PARSE_ERROR){
 				m_dnsInProgressFlag = false;
-				m_ethState = ethState_t::ETH_IDLE;
+				m_ethStateAfterClose = ethState_t::ETH_IDLE;
+				m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
 			}else if(m_dnsParseState == dnsParseState_t::DNS_PARSE_SUCCESS){
-				m_ethState = ethState_t::ETH_DNS_FINISHED;
+				m_ethStateAfterClose = ethState_t::ETH_DNS_FINISHED;
+				m_ethState = ethState_t::ETH_SOCKET_CLOSE_CLEAR_INTERRUPT;
 			}
 			break;
 
@@ -2873,7 +3002,7 @@ void Eth::stateMachine(){
 			if(m_timeoutTimer.isRunning())
 				m_timeoutTimer.stopTimer();
 			m_socketTransferDone = false;
-			m_ethState = ethState_t::ETH_IDLE;
+			m_ethState = m_ethStateAfterClose;
 			break;
 
 		default:

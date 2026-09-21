@@ -14,6 +14,8 @@ Gpio::Gpio(bool port, uint8_t pin, dir_t dir, activeMode_t active) : m_port(port
 	if(m_port) SYSCON->SYSAHBCLKCTRL0 |= (1 << 20);
 	else SYSCON->SYSAHBCLKCTRL0 |= (1 << 6);
 
+	SYSCON->SYSAHBCLKCTRL0 |= (1 << 18);	//	Enable IOCON clk
+
 	if(m_dir == dir_t::D_INPUT) GPIO->DIR[m_port] &= ~(1 << m_pin);
 	else GPIO->DIR[m_port] |= (1 << m_pin);
 }

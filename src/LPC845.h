@@ -193,7 +193,8 @@ typedef struct
         uint32_t RSERVED1[31U];
   volatile uint32_t ISPR[1U];               /*!< Offset: 0x100 (R/W)  Interrupt Set Pending Register */
         uint32_t RESERVED2[31U];
-  volatile uint32_t RESERVED3[31U];
+  volatile uint32_t ICPR[1U];				/*!< Offset: 0x180 (R/W)  Interrupt Clear Pending Register */
+  	  	uint32_t RESERVED3[31U];
         uint32_t RESERVED4[64U];
   volatile uint32_t IP[8U];                 /*!< Offset: 0x300 (R/W)  Interrupt Priority Register */
 }NVIC_Type;
@@ -312,9 +313,12 @@ typedef struct {
 		volatile uint16_t START_H;		//	SCT Start Event Select Register High Counter 16bit
 	} START;
 			 uint32_t RESERVED_0[10];
-	struct {
-		volatile uint16_t COUNT_L;		//	SCT Counter Register Low Counter 16bit
-		volatile uint16_t COUNT_H;		//	SCT Counter Register High Counter 16bit
+	union{
+		struct {
+			volatile uint16_t COUNT_L;		//	SCT Counter Register Low Counter 16bit
+			volatile uint16_t COUNT_H;		//	SCT Counter Register High Counter 16bit
+		};
+		volatile uint32_t COUNTU;			//	SCT Unified Counter Register (32 bit)
 	} COUNT;
 	struct{
 		volatile uint16_t STATE_L;		//	SCT State Register Low Counter 16bit
@@ -360,7 +364,7 @@ typedef struct {
 		volatile uint32_t STATE;		//	SCT Event State Register 0-7
 		volatile uint32_t CTRL;			//	SCT Event Control Register 0-7
 	} EV[8];
-			 uint32_t RESERVED_4[64];
+			 uint32_t RESERVED_4[112];
 	struct {
 		volatile uint32_t SET;			//	SCT Output Set Register 0-6
 		volatile uint32_t CLR;			//	SCT Output Clear Register 0-6
