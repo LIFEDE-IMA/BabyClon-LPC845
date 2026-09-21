@@ -10,16 +10,16 @@
 
 #include "inmux.h"
 
-void InMux::setDMA_INMUX(DMA_TRIGGER_INPUT_NUMBER_t inmux, uint8_t dmaChannel) const{
+void InMux::setDMA_INMUX(DMA_TRIGGER_INPUT_NUMBER_t inmux, uint8_t dmaChannel){
 	if(dmaChannel <= 25)
 		INMUX->DMA_INMUX[inmux] |= dmaChannel;
 }
 
-void InMux::setSCT_INMUX(SCT_INPUT_NUMBER_t sctInputNumber, SCT_INMUX_SOURCE_t sctInputSource) const{
+void InMux::setSCT_INMUX(SCT_INPUT_NUMBER_t sctInputNumber, SCT_INMUX_SOURCE_t sctInputSource){
 	INMUX->SCT_INMUX[sctInputNumber] |= sctInputSource;
 }
 
-void InMux::setDMA_TriggerInput(uint8_t dmaChannel, DMA_TRIGGER_INPUT_SOURCE_t dmaTriggerInput) const{
+void InMux::setDMA_TriggerInput(uint8_t dmaChannel, DMA_TRIGGER_INPUT_SOURCE_t dmaTriggerInput){
 	if(dmaChannel <= 25)
 			INMUX->DMA_ITRIG[dmaChannel] |= dmaTriggerInput;
 }

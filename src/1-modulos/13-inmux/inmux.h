@@ -21,7 +21,7 @@ class InMux{
 			SCT_PIN2 = 0x2,		//	SCT_PIN2. Assign to pin using the switch matrix
 			SCT_PIN3 = 0x3,		//	SCT_PIN3. Assign to pin using the switch matrix
 			ADC_THCMP_IRQ = 0x4,
-			ACMP_O = 0x5,
+			sctACMP_O = 0x5,
 			T0_MAT2 = 0x6,
 			GPIOINT_BMATCH = 0x7,
 			ARM_TXEV = 0x8,
@@ -33,7 +33,7 @@ class InMux{
 			ADC_SEQB_IRQ = 0x1,
 			SCT_DMA0 = 0x2,
 			SCT_DMA1 = 0x3,
-			ACMP_O = 0x4,
+			dmaACMP_O = 0x4,
 			PININT4 = 0x5,
 			PININT5 = 0x6,
 			PININT6 = 0x7,
@@ -58,9 +58,9 @@ class InMux{
 
 		InMux(){}	//	Constructor
 
-		static void setDMA_INMUX(DMA_TRIGGER_INPUT_NUMBER_t inmux, uint8_t dmaChannel) const;					//	Sets [dmaChannel] trigger output as DMA_INMUX[0:1] input
-		static void setSCT_INMUX(SCT_INPUT_NUMBER_t sctInputNumber, SCT_INMUX_SOURCE_t sctInputSource) const;	//	Sets [sctInputSource] as input source for SCT input 0-3
-		static void setDMA_TriggerInput(uint8_t dmaChannel, DMA_TRIGGER_INPUT_SOURCE_t dmaTriggerInput) const;	//	Sets [dmaTriggerInput] as trigger input for DMA channel 0-25
+		static void setDMA_INMUX(DMA_TRIGGER_INPUT_NUMBER_t inmux, uint8_t dmaChannel);					//	Sets [dmaChannel] trigger output as DMA_INMUX[0:1] input
+		static void setSCT_INMUX(SCT_INPUT_NUMBER_t sctInputNumber, SCT_INMUX_SOURCE_t sctInputSource);	//	Sets [sctInputSource] as input source for SCT input 0-3
+		static void setDMA_TriggerInput(uint8_t dmaChannel, DMA_TRIGGER_INPUT_SOURCE_t dmaTriggerInput);//	Sets [dmaTriggerInput] as trigger input for DMA channel 0-25
 
 		~InMux(){}	//	Destructor
 };
