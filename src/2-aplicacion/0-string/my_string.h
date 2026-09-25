@@ -43,6 +43,11 @@ class String{
 		static int float2str(float data, char *buffer, int initPos = 0);							//	Converts float to string
 		static int floatVec2str(float *data, uint8_t dataSize, char *buffer, char delimiter = '$');	//	Converts float vector to string
 
+		String& operator=(const char *str);							//	Assignment (Deleting Any Previous Data)
+		String& operator=(char *str);								//	Assignment (Deleting Any Previous Data)
+		String& operator=(uint8_t val);								//	Assignment (Deleting Any Previous Data)
+		String& operator=(uint16_t val);							//	Assignment (Deleting Any Previous Data)
+		String& operator=(uint32_t val);							//	Assignment (Deleting Any Previous Data)
 		String& operator+=(const char *str);						//	Concatenation
 		String& operator+=(char *str);								//	Concatenation
 		String& operator+=(uint8_t val);							//	Concatenation str + uint8_t

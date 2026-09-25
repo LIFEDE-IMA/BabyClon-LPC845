@@ -211,6 +211,65 @@ void String::append(char *str){
 	m_error = error_type::OK;
 }
 
+String& String::operator=(const char *str){
+	if(!str){
+		m_error = error_type::NULL_STR;
+		return *this;
+	}
+
+	String::strcpy(m_str, str);	//	Copies str to existing m_str
+	m_index = String::strlen(str);
+	m_error = error_type::OK;
+
+	return *this;
+}
+
+String& String::operator=(char *str){
+	if(!str){
+		m_error = error_type::NULL_STR;
+		return *this;
+	}
+
+	String::strcpy(m_str, str);	//	Copies str to existing m_str
+	m_index = String::strlen(str);
+	m_error = error_type::OK;
+
+	return *this;
+}
+
+String& String::operator=(uint8_t val){
+	char buffer[4];
+
+	String::uint_to_str(val, buffer);
+	String::strcpy(m_str, buffer);	//	Copies str to existing m_str
+	m_index = String::strlen(buffer);
+	m_error = error_type::OK;
+
+	return *this;
+}
+
+String& String::operator=(uint16_t val){
+	char buffer[6];
+
+	String::uint_to_str(val, buffer);
+	String::strcpy(m_str, buffer);	//	Copies str to existing m_str
+	m_index = String::strlen(buffer);
+	m_error = error_type::OK;
+
+	return *this;
+}
+
+String& String::operator=(uint32_t val){
+	char buffer[11];
+
+	String::uint_to_str(val, buffer);
+	String::strcpy(m_str, buffer);	//	Copies str to existing m_str
+	m_index = String::strlen(buffer);
+	m_error = error_type::OK;
+
+	return *this;
+}
+
 String& String::operator +=(const char *str){
 	String::append(str);
 	return *this;

@@ -234,7 +234,6 @@ void SCTimer::init(void){
 							 (m_sctCounterDirH << 4) |		//	Sets counter dir (up or up-down)
 							 (m_sctPrescalerH << 5));		//	Sets clk divider (clkDiv_H + 1)
 	}
-
 }
 
 void SCTimer::inputConfig(void){
@@ -548,6 +547,28 @@ uint32_t SCTimer::getConflictFlags(void) const{
 void SCTimer::clearConflictFlags(uint32_t flags) const{
 	uint32_t mask = (0x3F | (0x3 << 30));
 	SCT->CONFLAG = (flags & mask);
+}
+
+void SCTimer::setOutput(outputNumber_t output) const{
+	SCT->OUTPUT |= (1 << output);	//	(SCTimer HAS to be Halted)
+}
+
+void SCTimer::setStop(sctCounter_t counter, sctEvent_t event) const{
+	if(counter != sctCounter_t::HIGH_COUNTER)
+		SCT->STOP.STOP_L |= (1 << event);
+	else if(m_sctOpMode != sctOpMode_t::sctUNIFIED_MODE)
+		SCT->STOP.STOP_H |= (1 << event);
+}
+
+void SCTimer::clrOutput(outputNumber_t output) const{
+	SCT->OUTPUT &= ~(1 << output);	//	(SCTimer HAS to be Halted)
+}
+
+void SCTimer::clrStop(sctCounter_t counter, sctEvent_t event) const{
+	if(counter != sctCounter_t::HIGH_COUNTER)
+		SCT->STOP.STOP_L &= ~(1 << event);
+	else if(m_sctOpMode != sctOpMode_t::sctUNIFIED_MODE)
+		SCT->STOP.STOP_H &= ~(1 << event);
 }
 
 void SCTimer::isrHandler(void){

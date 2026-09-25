@@ -264,6 +264,11 @@ class SCTimer{
 		uint32_t getConflictFlags(void) const;			//	Returns Active Conflict Flags
 		void clearConflictFlags(uint32_t flags) const;	//	Clears Active Conflict Flags
 
+		void setOutput(outputNumber_t output) const;					//	Forces "1" In [output] Output (SCTimer HAS to be Halted)
+		void setStop(sctCounter_t counter, sctEvent_t event) const;		//	[event] Event Stops [counter] Count
+		void clrOutput(outputNumber_t output) const;					//	Forces "0" In [output] Output (SCTimer HAS to be Halted)
+		void clrStop(sctCounter_t counter, sctEvent_t event) const;		//	[event] Event NO More Stops [counter] Count
+
 		void isrHandler(void);	//	Member ISR Handler (called whenever an event triggers an interrupt)
 
 		friend void SCT_IRQHandler(void);	//	ISR Handler for SCTimer
