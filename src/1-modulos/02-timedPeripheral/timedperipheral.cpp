@@ -12,6 +12,16 @@
 TimedPeripheral **timedPeripheral_instances = nullptr;
 uint8_t TimedPeripheral::timedPeripSources = 0;
 
+static inline uint32_t timedPerCriticalEnter(void){	//	Saves Active Interrupts and Disables Them
+	uint32_t primask;
+	__asm volatile ("mrs %0, primask\n\tcpsid i" : "=r" (primask) : : "memory");
+	return primask;
+}
+
+static inline void timedPerCriticalExit(uint32_t primask){	//	Restores Previous Active Interrupts
+	__asm volatile ("msr primask, %0" : : "r" (primask) : "memory");
+}
+
 TimedPeripheral::TimedPeripheral(){
 	TimedPeripheral **aux = new TimedPeripheral*[timedPeripSources + 1];	//	Adds new peripheral to the array
 
@@ -19,10 +29,14 @@ TimedPeripheral::TimedPeripheral(){
 		aux[idx] = timedPeripheral_instances[idx];
 
 	aux[timedPeripSources] = this;
-	timedPeripSources++;
 
-	delete[] timedPeripheral_instances;
+	uint32_t primask = timedPerCriticalEnter();	//	Prevents SysTick from Firing Before Having Valid Sources' Array (HardFault)
+	TimedPeripheral **old = timedPeripheral_instances;
 	timedPeripheral_instances = aux;
+	timedPeripSources++;
+	timedPerCriticalExit(primask);	//	End of Critical Zone
+
+	delete[] old;
 }
 
 TimedPeripheral::~TimedPeripheral(){
@@ -39,8 +53,12 @@ TimedPeripheral::~TimedPeripheral(){
 	for(uint8_t i = index + 1; i < timedPeripSources; i++)
 		aux[i - 1] = timedPeripheral_instances[i];	//	Deletes current instance from the array
 
-	delete[] timedPeripheral_instances;
+	uint32_t primask = timedPerCriticalEnter();	//	Same Logic as Before
+	TimedPeripheral **old = timedPeripheral_instances;
 	timedPeripSources--;
 	timedPeripheral_instances = aux;
+	timedPerCriticalExit(primask);
+
+	delete[] old;
 }
 
