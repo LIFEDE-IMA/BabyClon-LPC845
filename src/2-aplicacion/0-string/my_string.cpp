@@ -128,17 +128,15 @@ void String::uint_to_str(uint32_t val, char *str){
 int String::float2str(float data, char *buffer, int initPos){
 	int len = initPos;
 	int j = 0;
-	char str[11];
+	char str[13];
 
 	if(data < 0){
 		buffer[len++] = '-';
 		data = -data;
 	}
 
-	int entero = (int)data;
-	int decimal = (int)((data - entero)*1000);	//	3 decimals
-
-	entero = data;
+	int entero = (int)(data + 0.05f);
+	int decimal = (int)((data - entero)*10);	//	1 decimal
 
 	if (entero == 0){
 		str[j++] = '0';
@@ -155,9 +153,7 @@ int String::float2str(float data, char *buffer, int initPos){
 
 	buffer[len++] = '.';
 
-	buffer[len++] = ((decimal / 100) % 10) + '0';	//	Write decimals to the string
-	buffer[len++] = ((decimal / 10) % 10) + '0';
-	buffer[len++] = (decimal % 10) + '0';
+	buffer[len++] = (decimal % 10) + '0';	//	Write decimal to the string
 
 	buffer[len] = '\0';
 
@@ -300,6 +296,14 @@ String& String::operator +=(uint32_t val){
 	char buffer[11];
 
 	String::uint_to_str(val, buffer);
+	String::append(buffer);
+	return *this;
+}
+
+String& String::operator+=(float val){
+	char buffer[13];	//	MAX: uint32_t + 1 decimal +  "-"
+
+	String::float2str(val, buffer);
 	String::append(buffer);
 	return *this;
 }

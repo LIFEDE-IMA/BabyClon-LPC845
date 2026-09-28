@@ -53,6 +53,7 @@ class String{
 		String& operator+=(uint8_t val);							//	Concatenation str + uint8_t
 		String& operator+=(uint16_t val);							//	Concatenation str + uint16_t
 		String& operator+=(uint32_t val);							//	Concatenation str + uint32_t
+		String& operator+=(float val);								//	Concatenation str + float
 		bool operator==(const char *str) const;						//	Compares str with m_str
 		bool operator!=(const char *str) const;						//	Compares str with m_str
 
