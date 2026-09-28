@@ -24,6 +24,16 @@
 #define SLAVE_NO_SLAVE (0xF) // es para limpiar el registro con la funcion de seleccionar el slave, no se si se va a usar pero queda implementado
 #define SLAVE_MAX_QUANTITY(x) ((x==SPI_NUMBER_0)? 4:2)
 
+static inline uint32_t spiCriticalEnter(void){	//	Agregado por Mati3 (28/09/26), apaga las interrupciones y guarda el estado de las mismas para ejecutar una parte critica de spi (lo uso para poder ejecutar el display a ~1ms y el w5500 al mismo tiempo)
+	uint32_t primask;
+	__asm volatile ("mrs %0, primask\n\tcpsid i" : "=r" (primask) : : "memory");
+	return primask;
+}
+
+static inline void spiCriticalExit(uint32_t primask){	//	Agregado por Mati3 (28/09/26), vuelve a habilitar las interrupciones que estaban habilitadas antes de definir una zona critica
+	__asm volatile ("msr primask, %0" : : "r" (primask) : "memory");
+}
+
 SPI_Type*  SPIs[]={ SPI0, SPI1 };
 
 Spi *g_spi[ 2 ];
@@ -57,7 +67,7 @@ Spi::Spi( 		bool portMOSI , uint8_t pinMOSI ,
 	index_TX = 0;
 	index_RX = 0;
 
-	current_packet.TX_data = nullptr;		//	Agregado por Mati3 (31/07/26)
+	//current_packet.TX_data = nullptr;		//	Agregado por Mati3 (31/07/26), comentado el 28/09/26
 	current_packet.RX_data = nullptr;		//	Bug de hardFault al crear el primer paquete
 	current_packet.done_flag = nullptr;
 	current_packet.n_bytes = 0;
@@ -140,23 +150,28 @@ Spi::Spi( 		bool portMOSI , uint8_t pinMOSI ,
 
 Spi::~Spi() {
 	Tx_DisableInterupt();
-
+/*
 	for(uint32_t i = 0; i < m_max_packets; i++){
 		if(spi_packets[i].TX_data != nullptr){	//	Agregado por Mati3 (04/08/26)
 			delete[] spi_packets[i].TX_data;	//	Solo para no tener pérdidas de memoria
 			spi_packets[i].TX_data = nullptr;	//	Al destruir SPI con paquetes pendientes
 		}
-	}
-
+	}												Comentado el 28/09/26
+*/
 	delete[] spi_packets;
 	spi_packets = nullptr;
 }
 
-void Spi::push_packet ( SPI_packet packet )
+bool Spi::push_packet ( SPI_packet packet )
 {
+	uint32_t next_in = ((m_inx_packetIn + 1) % m_max_packets);	//	Agregado por Mati3 (28/09/26)
+
+	if(next_in == m_inx_packetOut){		//	Comparacion Agregada por Mati3 (28/09/26)
+		return false;	//	Queue full
+	}
 	spi_packets[ m_inx_packetIn ] = packet;
-	m_inx_packetIn ++;
-	m_inx_packetIn %= m_max_packets;
+	m_inx_packetIn = next_in;	//	Modificado por Mati3 (28/09/26), antes: m_inx_packetIn++; m_inx_packetIn %= m_max_packets;
+	return true;				//	Idem
 }
 
 uint8_t Spi::pop_packet (SPI_packet * packet )
@@ -171,7 +186,7 @@ uint8_t Spi::pop_packet (SPI_packet * packet )
 		*/
 		*packet = spi_packets[ m_inx_packetOut ] ;
 
-		spi_packets[m_inx_packetOut].TX_data = nullptr;		//	Agregado por Mati3 (04/08/26)
+		//spi_packets[m_inx_packetOut].TX_data = nullptr;		//	Agregado por Mati3 (04/08/26), comentado el 28/09/26
 		spi_packets[m_inx_packetOut].RX_data = nullptr;		//	Limpieza de punteros
 		spi_packets[m_inx_packetOut].done_flag = nullptr;	//	No era un bug pero ayuda a
 		spi_packets[m_inx_packetOut].n_bytes = 0;			//	Encontrar los dueños de ciertos punteros
@@ -189,24 +204,35 @@ void Spi::SPI_IRQHandler ( void )
 {
 	uint8_t dato = 0;
 	uint32_t stat = m_spi->STAT;
-	if( stat & SPI_TXRDY_MASK) // TXRDY
+	if( stat & SPI_TXRDY_MASK ) // TXRDY
 	{
 		if( index_TX <  current_packet.n_bytes)
 		{
-			if(current_packet.TX_data != nullptr)
+			dato = current_packet.TX_data[index_TX];	//	Modificado por Mati3 (28/09/26), antes era 			if(current_packet.TX_data != nullptr){dato =...}
+/*			if(current_packet.TX_data != nullptr)
 			{
 				dato = *(current_packet.TX_data + index_TX);
 			}
+*/
+			uint32_t txdatctl = (
+							SPI_TXDATCTL_SSEL_ACTIVE(current_packet.slave)	// SSELx
+						|	SPI_TXDATCTL_DATA_LENGHT(8)							// estableciendo una trama de  bits (es el valor + 1):
+		                |	(dato)
+			);
+
+			/*	Antes era asi (modificado por Mati3, 28/09/26):
 			m_spi->TXDATCTL = (
 					SPI_TXDATCTL_SSEL_ACTIVE(current_packet.slave)		// SSELx
                 |	SPI_TXDATCTL_DATA_LENGHT(8)							// estableciendo una trama de  bits (es el valor + 1):
                 |	(dato)
 			);
-
+*/
 			if(index_TX == (current_packet.n_bytes - 1)) // es la ultima trama del paquete
 			{
-				m_spi->TXDATCTL |=	(1 << 20); // EOT = End of transfer
+				txdatctl |=	(1 << 20); // EOT = End of transfer
 			}
+
+			m_spi->TXDATCTL = txdatctl;
 
 			index_TX ++;
 		}
@@ -216,10 +242,11 @@ void Spi::SPI_IRQHandler ( void )
 		}
 	}
 
-	if( (stat & SPI_RXRDY_MASK) && m_flagTx ) // RXRDY
+	if( stat & SPI_RXRDY_MASK ) // RXRDY	//	Modified by Mati3, clk speed issue, before: if((stat & SPI_RXRDY_MASK) && m_flagTx)
 	{
 		dato = ( uint8_t ) ((m_spi->RXDAT) & 0xFF);
-		if(index_RX <  current_packet.n_bytes)
+
+		if(m_flagTx && ( index_RX < current_packet.n_bytes ))
 		{
 			if(current_packet.RX_data != nullptr)
 			{
@@ -235,11 +262,11 @@ void Spi::SPI_IRQHandler ( void )
 		{
 			*(current_packet.done_flag) = true;
 		}
-		if(current_packet.TX_data != nullptr){	//	Agregado por Mati3 (31/07/26)
+/*		if(current_packet.TX_data != nullptr){	//	Agregado por Mati3 (31/07/26)
 			delete[] current_packet.TX_data;	//	Solucion de bug hardFault
 			current_packet.TX_data = nullptr;	//	Elimina paquete obsoleto
-		}
-
+		}											Comentado el 28/09/26
+*/
 
 		if(pop_packet(&current_packet) == 1)
 		{
@@ -266,20 +293,31 @@ void Spi::Tx_DisableInterupt (  void )
 
 void Spi::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t slave_n ,  volatile bool* done)
 {
+	if(n > SPI_MAX_PACKET_BYTES)
+		return;
+
 	SPI_packet new_packet;
 
 	if(write_buff != nullptr)
-	{
+	{	//	Modificado por Mati3 (28/09/26), antes era lo que está comentado abajo
+		for(uint32_t idx = 0; idx < n; idx++)
+			new_packet.TX_data[idx] = ((uint8_t*)write_buff)[idx];
+
+		/*
 		uint8_t* new_write_buff = (new uint8_t[n]);
 		for (uint32_t i = 0; i < n; i++)
 		{
 			new_write_buff [i] = ((uint8_t*)write_buff)[i];
 		}
 		new_packet.TX_data = new_write_buff;
+		*/
 	}
 	else
-	{
-		new_packet.TX_data = nullptr;
+	{	//	Modificado por Mati3 (28/09/26), antes era lo que está comentado abajo
+		for(uint32_t idx = 0; idx < n; idx++)
+			new_packet.TX_data[idx] = 0;
+
+		//new_packet.TX_data = nullptr;
 	}
 
 	new_packet.done_flag = done;
@@ -292,7 +330,13 @@ void Spi::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t s
 		*done = false;
 	}
 
-	push_packet(new_packet);
+	//	Critical Zone Agregado por Mati 3 para que no se interrumpa el envio de paquetes ethernet
+	uint32_t primask = spiCriticalEnter();
+
+	if(!push_packet(new_packet)){	//	Modificado por Mati3 (28/09/26), antes no era un if, solo push()
+		spiCriticalExit(primask);	//	Fin de zona critica
+		return;	//	Queue full
+	}
 
 	if ( m_flagTx == false )
 	{
@@ -301,6 +345,8 @@ void Spi::Transmit ( void * write_buff ,void * read_buff , uint32_t n, uint8_t s
 			Tx_EnableInterupt (  );				//	Pero sin el if(pop_packet)
 		}
 	}
+
+	spiCriticalExit(primask);	//	Fin de Zona crítica (Agregado por Mati3 28/09/26)
 }
 
 

@@ -22,8 +22,10 @@ void SPI1_IRQHandler ( void );
 
 #define SPI_DEFAULT_MAX_PACKETS (32)
 
+#define SPI_MAX_PACKET_BYTES	(150)	//	Added by Mati3 (28/09/26)
+
 typedef struct {
-	uint8_t* TX_data;
+	uint8_t TX_data[SPI_MAX_PACKET_BYTES];	//	Modified by Mati3 (28/09/26) (uint8_t *TX_data; before)
 	uint8_t* RX_data;
 	uint32_t n_bytes;
 	uint8_t slave;
@@ -109,7 +111,7 @@ class Spi
 		int8_t AddSlave(bool portSS , uint8_t pinSS , SPI_SLAVE_SELECT_POLARITY_t polarity );
 	private:
 		uint8_t pop_packet (SPI_packet * dato ) ;
-		void push_packet ( SPI_packet dato ) ;
+		bool push_packet ( SPI_packet dato ) ;	//	Returns false if queue was full (modified by Mati3 28/09/26) (void push_packet(SPI_packet dato) before)
 
 		void Tx_EnableInterupt (  void );
 		void Tx_DisableInterupt (  void );
