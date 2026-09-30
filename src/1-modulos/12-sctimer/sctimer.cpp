@@ -205,6 +205,14 @@ void SCTimer::configEventOutputClear(outputNumber_t output, sctEvent_t event) co
 	SCT->OUT[output].CLR |= (1 << event);	//	Selects event to clear output
 }
 
+void SCTimer::clearEventOutputSet(outputNumber_t output, sctEvent_t event) const{
+	SCT->OUT[output].SET &= ~(1 << event);	//	NO more selects event to set output
+}
+
+void SCTimer::clearEventOutputClear(outputNumber_t output, sctEvent_t event) const{
+	SCT->OUT[output].CLR &= ~(1 << event);	//	NO more selects event to clear output
+}
+
 void SCTimer::init(void){
 	//	Connect SCT INPUTS with INMUX and SWM
 	if(m_sctInputTriggerConfigured_flag)	SCTimer::inputConfig();
@@ -384,6 +392,21 @@ void SCTimer::setCaptureTrigger(sctCounter_t counter, sctRegisterNumber_t reg, s
 	}
 }
 
+void SCTimer::clearCaptureTrigger(sctCounter_t counter, sctRegisterNumber_t reg, sctEvent_t event) const{
+	bool regmode = (((SCT->REGMODE.REGMODE_L) >> reg) & 0x1);
+
+	if(counter == sctCounter_t::HIGH_COUNTER)
+		regmode = (((SCT->REGMODE.REGMODE_H) >> reg) & 0x1);
+
+	if(regmode == sctRegsiterMode_t::regCAPTURE_MODE){
+		if(counter != sctCounter_t::HIGH_COUNTER){
+			SCT->MATCHREL_CAPCTRL[reg].CAPCTRL_L &= ~(1 << event);
+		}else if(m_sctOpMode != sctOpMode_t::sctUNIFIED_MODE){
+			SCT->MATCHREL_CAPCTRL[reg].CAPCTRL_H &= ~(1 << event);
+		}
+	}
+}
+
 void SCTimer::setLimit(sctCounter_t counter, sctEvent_t event) const{
 	if(counter != sctCounter_t::HIGH_COUNTER)
 		SCT->LIMIT.LIMIT_L |= (1 << event);
@@ -505,6 +528,20 @@ void SCTimer::setTimer(sctCounter_t counter, sctRegisterNumber_t reg, uint32_t t
 		}
 	}
 
+}
+
+void SCTimer::setMatch(sctCounter_t counter, sctRegisterNumber_t reg, uint32_t ticks) const{
+	//	COUNTER HAS TO BE HALTED
+	if(m_sctOpMode == sctOpMode_t::sctUNIFIED_MODE){
+		SCT->MATCH_CAP[reg].MATCH_L = (uint16_t)ticks;
+		SCT->MATCH_CAP[reg].MATCH_H = (uint16_t)(ticks >> 16);
+	}else{
+		if(counter != sctCounter_t::HIGH_COUNTER){
+			SCT->MATCH_CAP[reg].MATCH_L = (uint16_t)ticks;
+		}else{
+			SCT->MATCH_CAP[reg].MATCH_H = (uint16_t)ticks;
+		}
+	}
 }
 
 void SCTimer::startCounter(sctCounter_t counter) const{

@@ -209,8 +209,6 @@ class SCTimer{
 		void outputConfig(void);	//	Configures SCT Output SWM
 		void setOutputADC(outputType_t outputADC);	//	Configures SCT Output PIO when ADC Trigger Output Type is asked
 
-		uint32_t baseToTicks(sctCounter_t counter, uint32_t time, sctTimeBase_t base) const;	//	Converts time into ticks
-
 	public:
 		SCTimer(sctOpMode_t opMode = sctOpMode_t::sctUNIFIED_MODE, void (*usrHandler)(void) = nullptr, bool setInputTrigger = false, bool setOutputTrigger = false);	//	Constructor
 
@@ -229,6 +227,8 @@ class SCTimer{
 		void configEventOutput(sctCounter_t counter, sctEvent_t event, sctRegisterNumber_t matchRegSel, outputNumber_t outputNumber, sctEventIOCondition_t ioCondition, sctEventCombMode_t combMode, sctEventMatchCondition matchCond, sctEventDirDepending_t dirDepending, sctEventStateLoad_t stateLoad = sctEventStateLoad_t::STATE_ADD, sctEventState_t newState = sctEventState_t::sctEVENT_STATE_0) const;				//	Configures Event Trigger With Output Conditions
 		void configEventOutputSet(outputNumber_t output, sctEvent_t event) const;		//	Sets [event] event as the setter for [output] output
 		void configEventOutputClear(outputNumber_t output, sctEvent_t event) const;		//	Sets [event] event as the clearer for [output] output
+		void clearEventOutputSet(outputNumber_t output, sctEvent_t event) const;		//	Clears [event] event as the setter for [output] output
+		void clearEventOutputClear(outputNumber_t output, sctEvent_t event) const;		//	Clears [event] event as the clearer for [output] output
 
 		void init(void);			//	Configures SCTimer Peripheral
 
@@ -241,7 +241,8 @@ class SCTimer{
 
 		void setReload(sctRegisterNumber_t reg, uint32_t reloadValue) const;							//	Sets reload value for reg 0-7 in unify mode
 		void setReload(sctCounter_t counter, sctRegisterNumber_t reg, uint16_t reloadValue) const;		//	Sets reload value for reg 0-7 in low counter or high counter
-		void setCaptureTrigger(sctCounter_t counter, sctRegisterNumber_t reg, sctEvent_t event) const;	//	Sets [event] event as the trigger for counter value to be loaded in capture register [reg]
+		void setCaptureTrigger(sctCounter_t counter, sctRegisterNumber_t reg, sctEvent_t event) const;	//	Sets [event] event as the trigger for [counter] value to be loaded in capture register [reg]
+		void clearCaptureTrigger(sctCounter_t counter, sctRegisterNumber_t reg, sctEvent_t event) const;//	Clears [event] as the trigger for [counter] value to be loaded in capture register [reg]
 		void setLimit(sctCounter_t counter, sctEvent_t event) const;		//	Sets [event] Event as Limit for the Counter
 		void clearLimit(sctCounter_t counter, sctEvent_t event) const;		//	Clears [event] Event as Limit for the Counter
 
@@ -253,7 +254,10 @@ class SCTimer{
 		uint32_t getCount(sctCounter_t counter) const;	//	Returns Count for Unify, Low or High Counter
 		uint32_t getCapture(sctCounter_t counter, sctRegisterNumber_t reg) const;	//	Returns Counter Value when Events Selected by Capture Ctrl Reg Occur
 
+		uint32_t baseToTicks(sctCounter_t counter, uint32_t time, sctTimeBase_t base) const;	//	Converts time into ticks
+
 		void setTimer(sctCounter_t counter, sctRegisterNumber_t reg, uint32_t time, sctTimeBase_t base = sctTimeBase_t::T_SEG) const;	//	Configures MATCH[reg] to count till [time]
+		void setMatch(sctCounter_t counter, sctRegisterNumber_t reg, uint32_t ticks) const;		//	Configures MATCH[reg] to count till [ticks] ( Less CPU time than setTimer )
 		void startCounter(sctCounter_t counter) const;		//	Starts SCTimer Count (unify, low or high counter)
 		void stopCounter(sctCounter_t counter) const;		//	Stops SCTimer Count (unify, low or high counter)
 		void haltCounter(sctCounter_t counter) const;		//	Halts SCTimer (unify, low or high counter)
