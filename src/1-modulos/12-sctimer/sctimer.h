@@ -229,6 +229,7 @@ class SCTimer{
 		void configEventOutputClear(outputNumber_t output, sctEvent_t event) const;		//	Sets [event] event as the clearer for [output] output
 		void clearEventOutputSet(outputNumber_t output, sctEvent_t event) const;		//	Clears [event] event as the setter for [output] output
 		void clearEventOutputClear(outputNumber_t output, sctEvent_t event) const;		//	Clears [event] event as the clearer for [output] output
+		void clearCounter(sctCounter_t counter) const;	//	Clears Counter (Counter has to be halted)
 
 		void init(void);			//	Configures SCTimer Peripheral
 

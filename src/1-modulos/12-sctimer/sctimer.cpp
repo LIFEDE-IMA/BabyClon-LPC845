@@ -213,6 +213,13 @@ void SCTimer::clearEventOutputClear(outputNumber_t output, sctEvent_t event) con
 	SCT->OUT[output].CLR &= ~(1 << event);	//	NO more selects event to clear output
 }
 
+void SCTimer::clearCounter(sctCounter_t counter) const{
+	if(counter != sctCounter_t::HIGH_COUNTER)
+		SCT->CTRL.CTRL_L |= (1 << 3);
+	else if(m_sctOpMode != sctOpMode_t::sctUNIFIED_MODE)
+		SCT->CTRL.CTRL_H |= (1 << 3);
+}
+
 void SCTimer::init(void){
 	//	Connect SCT INPUTS with INMUX and SWM
 	if(m_sctInputTriggerConfigured_flag)	SCTimer::inputConfig();
