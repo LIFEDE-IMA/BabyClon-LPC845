@@ -11,104 +11,244 @@
 
 #include "onewire.h"
 
-OneWire::OneWire(){
-	m_bit = false;
-	m_presence = false;
-	m_multiDataRdy = false;
-	m_ROMsRdy = false;
+volatile bool f_busRestFinished = false;
+volatile bool f_cmdSent = false;
+volatile bool f_byteRead = false;
+
+OneWire *OneWireInstance = nullptr;
+
+OneWire::OneWire(bool port, uint8_t pin) : m_sctimer(SCTimer::sctUNIFIED_MODE, &OneWire::isrCallback){
+	//	OneWire Config
+	OneWireInstance = this;
+	m_port = port;
+	m_pin = pin;
+	m_bit = 0;
+	m_presenceFlag = false;
 	m_byte = 0;
-	m_bitIndex = 0;
+	m_byteIndex = 0;
+	m_busBusyFlag = false;
+	m_ROMsRdyFlag = false;
 	m_slvsNumber = 0;
-	m_startTime = 0;
+	m_onewireState = onewireState_t::OW_IDLE;
 
-	OneWire::init();
+	//	IOCON OPEN-DRAIN
+	SYSCON->SYSAHBCLKCTRL0 |= (1 << 18);	//	Enable IOCON clk
+	IOCON->PIO[Gpio::iocon_index[m_port][m_pin]] |= (Gpio::OM_OPENDRAIN << 10);
+	SYSCON->SYSAHBCLKCTRL0 &= ~(1 << 18);	//	Disable IOCON clk (saves power)
+
+	//	SCTimer Config
+	m_sctimer.configInput(InMux::SCT_INPUT_NUMBER_t::INPUT_0, InMux::SCT_INMUX_SOURCE_t::SCT_PIN0, m_port, m_pin);
+	m_sctimer.configOutput(SCTimer::sctOUTPUT_0, SCTimer::outputType_t::sctOUTPUTtype_PIN, m_port, m_pin);
+	m_sctimer.configRegisterMode(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_0, SCTimer::regMATCH_MODE);		//	Timing
+	m_sctimer.configRegisterMode(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_1, SCTimer::regCAPTURE_MODE);	//	Reset / presence / reading
+	m_sctimer.configRegisterMode(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_3, SCTimer::regMATCH_MODE);		//	Reading Timing
+
+	m_sctimer.init();
+	m_sctimer.setOutput(SCTimer::sctOUTPUT_0);	//	Sets Output Pin High
+
+	//	This Saves CPU Time During OW Protocol
+	m_writeZeroTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 57, SCTimer::T_MICRO);
+	m_writeOneTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 3, SCTimer::T_MICRO);
+	m_writeTotalSlotTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 60, SCTimer::T_MICRO);
+	m_readStartTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 1, SCTimer::T_MICRO);
+	m_readSampleTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 9, SCTimer::T_MICRO);
+	m_readTotalSlotTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 50, SCTimer::T_MICRO);
+
+
+	m_sctimer.enableNVICint();
 }
 
-void OneWire::init(){	//	SYSCON (Cap. 8), IOCON (Cap. 11), GPIO (Cap. 12)
-	SYSCON->SYSAHBCLKCTRL0 |= (1 << 6);	//	Enable GPIO0 clk
-
-	IOCON->PIO[16] |= (1 << 10);	// Open Drain
+void OneWire::clearEventResidue(SCTimer::sctCounter_t counter, SCTimer::sctEvent_t event, SCTimer::sctRegisterNumber_t reg, SCTimer::outputNumber_t output){
+	m_sctimer.clearLimit(counter, event);
+	m_sctimer.clrStop(counter, event);
+	m_sctimer.clearCaptureTrigger(counter, reg, event);
+	m_sctimer.clearEventOutputSet(output, event);
+	m_sctimer.clearEventOutputClear(output, event);
+	m_sctimer.disableEventInterrupt(event);
+	m_sctimer.clearEventIntFlag(event);
 }
 
-void OneWire::usDelay(uint32_t t){
-	m_wantedTime = t;
-	m_startTime = CTIMER0->TC;
+bool OneWire::resetBus(void){
+	if(m_busBusyFlag)	return false;
 
-	while((CTIMER0->TC - m_startTime) < m_wantedTime);
+	m_busBusyFlag = true;
+	m_onewireState = onewireState_t::OW_RST;
+	m_presenceFlag = false;
+
+	m_sctimer.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.setState(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_STATE_0);
+
+	//	CLEAR ANY PREVIOUS LIMIT / STOP FOR REQUIRED EVENTS
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);
+
+	// STATE 0: Set Bus Low ~480us -> Release -> State 1
+	m_sctimer.setTimer(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_0, 480, SCTimer::T_MICRO);
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0, SCTimer::sctREGISTER_0,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT, SCTimer::STATE_LOAD, SCTimer::sctEVENT_STATE_1);	//	When count == 480us, STATE = 1 (State 0 -> State 1)
+	m_sctimer.configEventOutputSet(SCTimer::sctOUTPUT_0, SCTimer::sctEVENT_0);	//	Event 0 Sets Output 0 Pin Low (Bus Low)
+	m_sctimer.setLimit(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0);	//	Reset Count to "0" Entering State 1
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_0, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 0 Is Not Enabled
+
+	//	STATE 1: Capture Bus Falling Edge (Presence) -> Close Window at 300us -> Stop
+	m_sctimer.configEventInput(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1,
+							   SCTimer::sctREGISTER_0, InMux::SCT_INPUT_NUMBER_t::INPUT_0,
+							   SCTimer::FALLING_EDGE, SCTimer::COMBMODE_IO, SCTimer::EQUAL,
+							   SCTimer::DIR_INDEPENDENT);	//	Match Register Sel is Irrelevant Here (Combmode = IO)
+	m_sctimer.setCaptureTrigger(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_1, SCTimer::sctEVENT_1);	//	Saves Counter Count In Register 1 When Event 1 Fires
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_1, SCTimer::sctEVENT_STATE_1);	//	If State != 1, Event 1 Is Not Enabled
+
+	m_sctimer.setTimer(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_2, 360, SCTimer::T_MICRO);
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2, SCTimer::sctREGISTER_2,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT, SCTimer::STATE_LOAD, SCTimer::sctEVENT_STATE_0);	//	Event 2 Fires When Count == 300us, Load Event 0 (Reset State Machine)
+	m_sctimer.setLimit(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);	//	Reset Count to "0" When Event 2 Fires
+	m_sctimer.setStop(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);	//	After Second Timer Hits Limit (300 us), Stop Counter
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_2, SCTimer::sctEVENT_STATE_1);	//	If State != 1, Event 2 Is Not Enabled
+	m_sctimer.enableEventInterrupt(SCTimer::sctEVENT_2);	//	Just the Last Event Requieres CPU Handling
+
+	m_sctimer.clrOutput(SCTimer::sctOUTPUT_0);	//	Set Bus Low
+	m_sctimer.startCounter(SCTimer::UNIFIED_COUNTER);
+
+	return true;
 }
 
-bool OneWire::readBus(){
-	return ((GPIO->PIN[0] >> 6) & 1);	//	PIO0_06 STATE
+void OneWire::armBitWrite(void){
+	//	Only State 0 Required
+	m_sctimer.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.setState(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_STATE_0);
+
+	//	CLEAR ANY PREVIOUS LIMIT / STOP FOR REQUIRED EVENTS
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);
+
+	//	EVENT 0: Set Bus Low ~6us (if bit == 1) or ~60us (if bit == 0) -> Decided In fireBitWrite()
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0, SCTimer::sctREGISTER_0,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT);	//	When count == [us]us, STATE = 0 (State 0 -> State 0, No Change)
+	m_sctimer.configEventOutputSet(SCTimer::sctOUTPUT_0, SCTimer::sctEVENT_0);	//	Event 0 Sets Output 0 Pin Low (Bus Low)
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_0, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 0 Is Not Enabled
+
+	//	EVENT 1: Whole Time Window (bit independent) ~70us
+	m_sctimer.setMatch(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_2, m_writeTotalSlotTicks);
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1, SCTimer::sctREGISTER_2,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT);	//	When count == 70us, STATE = 0 (State 0 -> State 0, No Change)
+	m_sctimer.setLimit(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1);	//	Reset Count to "0" When Event 1 Fires
+	m_sctimer.setStop(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1);	//	After Second Timer Hits Limit (70 us), Stop Counter
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_1, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 1 Is Not Enabled
+	m_sctimer.enableEventInterrupt(SCTimer::sctEVENT_1);	//	Just the Last Event Requieres CPU Handling
 }
 
-void OneWire::setBus_low(){
-	GPIO->DIRSET[0] |= (1 << 6);	//	Bus one_wire: Set Direction (PIO0_06)
-	GPIO->CLR[0] |= (1 << 6);		//	Bus one-wire: OFF (PIO0_06)
+void OneWire::fireBitWrite(bool bit){
+	uint32_t ticks = 0;
+	ticks = (bit ? m_writeOneTicks : m_writeZeroTicks);
+
+	m_sctimer.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.clearCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.setMatch(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_0, ticks);
+
+	m_sctimer.clrOutput(SCTimer::sctOUTPUT_0);	//	Set Bus Low
+	m_sctimer.startCounter(SCTimer::UNIFIED_COUNTER);
 }
 
-void OneWire::releaseBus(){
-	GPIO->DIRCLR[0] |= (1 << 6);	//	Bus one-wire: Clear Direction (PIO0_06), la línea queda high
+void OneWire::armBitRead(void){
+	//	Only State 0 Required
+	m_sctimer.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.setState(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_STATE_0);
+
+	//	CLEAR ANY PREVIOUS LIMIT / STOP FOR REQUIRED EVENTS
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1);
+	clearEventResidue(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);
+
+	//	EVENT 0: Set Bus Low ~3us -> Release Bus
+	m_sctimer.setMatch(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_0, m_readStartTicks);
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0, SCTimer::sctREGISTER_0,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT);	//	When count == [us]us, STATE = 0 (State 0 -> State 0, No Change)
+	m_sctimer.configEventOutputSet(SCTimer::sctOUTPUT_0, SCTimer::sctEVENT_0);	//	Event 0 Sets Output 0 Pin Low (Bus Low)
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_0, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 0 Is Not Enabled
+
+	//	EVENT 1: Wait ~12us AND if Input == Low Level -> Set EVFLAG ( COMBMODE_AND )
+	m_sctimer.setMatch(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_3, m_readSampleTicks);
+	m_sctimer.configEventInput(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_1,
+							   SCTimer::sctREGISTER_3, InMux::SCT_INPUT_NUMBER_t::INPUT_0,
+							   SCTimer::LOW_LEVEL, SCTimer::COMBMODE_AND, SCTimer::EQUAL,
+							   SCTimer::DIR_INDEPENDENT);	//	Match Register Sel is Relevant Here (Combmode = AND)
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_1, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 1 Is Not Enabled
+
+	//	EVENT 2: Whole Time Window ~60us -> Interrupt
+	m_sctimer.setMatch(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_2, m_readTotalSlotTicks);
+	m_sctimer.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2, SCTimer::sctREGISTER_2,
+						  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT);	//	When count == 60us, STATE = 0 (State 0 -> State 0, No Change)
+	m_sctimer.setLimit(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);	//	Reset Count to "0" When Event 2 Fires
+	m_sctimer.setStop(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_2);	//	After Third Timer Hits Limit (60 us), Stop Counter
+	m_sctimer.enableStateEvent(SCTimer::sctEVENT_2, SCTimer::sctEVENT_STATE_0);	//	If State != 0, Event 2 Is Not Enabled
+	m_sctimer.enableEventInterrupt(SCTimer::sctEVENT_2);	//	Just the Last Event Requieres CPU Handling
 }
 
-void OneWire::startBitReading(){
-	OneWire::setBus_low();	//	Write a 0 in the pin
-	OneWire::usDelay(2);	//	Set 2 counts match, MR0 = TC Interrupt
-
-	OneWire::releaseBus();
-	OneWire::usDelay(10);
-
-	m_bit = OneWire::readBus();
-
-	OneWire::usDelay(48);
+void OneWire::fireBitRead(void){
+	m_sctimer.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.clearCounter(SCTimer::UNIFIED_COUNTER);
+	m_sctimer.clrOutput(SCTimer::sctOUTPUT_0);	//	Set Bus Low
+	m_sctimer.startCounter(SCTimer::UNIFIED_COUNTER);
 }
 
-void OneWire::startBitWriting(bool bit){
-	m_bit = bit;
+bool OneWire::writeBit(bool bit){
+	if(m_busBusyFlag)	return false;
 
-	OneWire::setBus_low();	//	Write a 0 in the pin
+	m_busBusyFlag = true;
+	m_onewireState = onewireState_t::OW_WRITE_BIT;
 
-	if(bit){	//	Writes "1"
-		OneWire::usDelay(6);	//	Set 6 counts match, MR0 = TC Interrupt
-		OneWire::releaseBus();
-		OneWire::usDelay(64);
-	}else{		//	Writes "0"
-		OneWire::usDelay(60);	//	Set 60 counts match, MR0 = TC Interrupt
-		OneWire::releaseBus();
-		OneWire::usDelay(10);
-	}
+	OneWire::armBitWrite();		//	Configures SCTimer to Handle Write Op
+	OneWire::fireBitWrite(bit);	//	Sarts SCTimer in Bit Write Mode
+
+	return true;
 }
 
-void OneWire::startBusReset(){
-	OneWire::setBus_low();	//	Write a 0 in the pin
-	OneWire::usDelay(480);	//	Set 480 counts match, MR0 = TC Interrupt
+bool OneWire::readBit(void){
+	if(m_busBusyFlag)	return false;
 
-	OneWire::releaseBus();
-	OneWire::usDelay(20);
+	m_busBusyFlag = true;
+	m_onewireState = onewireState_t::OW_READ_BIT;
+	OneWire::armBitRead();		//	Configures SCTimer to Handle Read Op
+	OneWire::fireBitRead();		//	Sarts SCTimer in Bit Read Mode
 
-	m_presence = !OneWire::readBus();
-	OneWire::usDelay(410);
+	return true;
 }
 
-void OneWire::startByteReading(){
-	m_byte = 0;
+bool OneWire::writeByte(uint8_t byte){
+	if(m_busBusyFlag)	return false;
 
-	for(m_bitIndex = 0; m_bitIndex < 8; m_bitIndex++){
-		OneWire::startBitReading();	//	Starts with the first bit
-		if(m_bit){
-			m_byte |= (1 << m_bitIndex);
-		}
-	}
-}
-
-void OneWire::startByteWriting(uint8_t byte){
+	f_cmdSent = false;
+	m_busBusyFlag = true;
+	m_onewireState = onewireState_t::OW_WRITE_BYTE;
 	m_byte = byte;
+	m_byteIndex = 0;
 
-	for(m_bitIndex = 0; m_bitIndex < 8; m_bitIndex++){
-		OneWire::startBitWriting(m_byte & 1);	//	Starts with the first bit
-		m_byte>>=1;
-	}
+	OneWire::armBitWrite();	//	Configures SCTimer to Handle Write Op
+	OneWire::fireBitWrite(((m_byte >> m_byteIndex) & 0x1));	//	Starts with the first bit (LSB First)
+
+	return true;
 }
 
+
+
+bool OneWire::readByte(void){
+	if(m_busBusyFlag)	return false;
+
+	f_byteRead = false;
+	m_busBusyFlag = true;
+	m_onewireState = onewireState_t::OW_READ_BYTE;
+	m_byte = 0;
+	m_byteIndex = 0;
+
+	OneWire::armBitRead();	//	Configures SCTimer to Handle Read Op
+	OneWire::fireBitRead();	//	Sarts SCTimer in Bit Read Mode
+
+	return true;
+}
+
+/*
 uint8_t OneWire::getCRC(uint8_t *scratchpad, uint8_t len){
 	int i, j;
 	uint8_t crc = 0;
@@ -202,14 +342,78 @@ void OneWire::startROMsearch(){
 	m_ROMsRdy = true;
 }
 
-bool OneWire::areAllROMsRdy() const{ return m_ROMsRdy; }
 
-uint8_t OneWire::getSlvsNumber() const{ return m_slvsNumber; }
 
-uint8_t OneWire::getByte() const{ return m_byte; }
+bool OneWire::areAllROMsRdy(void) const{ return m_ROMsRdy; }
+*/
+uint8_t OneWire::getSlvsNumber(void) const{ return m_slvsNumber; }
+
+uint8_t OneWire::getByte(void) const{ return m_byte; }
+
+void OneWire::isrCallback(void){
+	if(OneWireInstance)
+		OneWireInstance->isrHandler();
+}
+
+void OneWire::isrHandler(void){
+	uint8_t flags = m_sctimer.getIntFlags();
+	m_sctimer.clearIntFlags(flags);
+
+	switch(m_onewireState){
+		case onewireState_t::OW_IDLE:
+			//	Nothing To Do
+			break;
+
+		case onewireState_t::OW_RST:
+			m_presenceFlag = ((flags & (1 << SCTimer::sctEVENT_1)) != 0);	//	If Event 1 Occurred, Slave Pulled-Down the Line
+			m_onewireState = onewireState_t::OW_IDLE;
+			f_busRestFinished = true;
+			m_busBusyFlag = false;
+			break;
+
+		case onewireState_t::OW_WRITE_BIT:
+			m_onewireState = onewireState_t::OW_IDLE;
+			m_busBusyFlag = false;
+			break;
+
+		case onewireState_t::OW_READ_BIT:
+			m_bit = !((flags & (1 << SCTimer::sctEVENT_1)) != 0);	//	COMBMODE_AND -> EVFLAG = 1 if 12us Timer Expired and Bus is Low Level
+			m_onewireState = onewireState_t::OW_IDLE;
+			m_busBusyFlag = false;
+			break;
+
+		case onewireState_t::OW_WRITE_BYTE:
+			m_byteIndex++;
+			if(m_byteIndex < 8){
+				OneWire::fireBitWrite(((m_byte >> m_byteIndex) & 0x1));	//	Next Bit
+			}else{
+				f_cmdSent = true;
+				m_onewireState = onewireState_t::OW_IDLE;
+				m_busBusyFlag = false;
+			}
+			break;
+
+		case onewireState_t::OW_READ_BYTE:
+			m_bit = !((flags & (1 << SCTimer::sctEVENT_1)) != 0);	//	COMBMODE_AND -> EVFLAG = 1 if 12us Timer Expired and Bus is Low Level
+			m_byte |= (m_bit << m_byteIndex);
+			m_byteIndex++;
+
+			if(m_byteIndex < 8){
+				OneWire::fireBitRead();	//	Next Bit
+			}else{
+				f_byteRead = true;
+				m_onewireState = onewireState_t::OW_IDLE;
+				m_busBusyFlag = false;
+			}
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
 
 OneWire::~OneWire(){}
-
 
 
 //	-----------------	SEARCH ROM OPERATION	-----------------	//
