@@ -11,10 +11,6 @@
 
 #include "onewire.h"
 
-volatile bool f_busRestFinished = false;
-volatile bool f_cmdSent = false;
-volatile bool f_byteRead = false;
-
 OneWire *OneWireInstance = nullptr;
 
 OneWire::OneWire(bool port, uint8_t pin) : m_sctimer(SCTimer::sctUNIFIED_MODE, &OneWire::isrCallback){
@@ -27,8 +23,19 @@ OneWire::OneWire(bool port, uint8_t pin) : m_sctimer(SCTimer::sctUNIFIED_MODE, &
 	m_byte = 0;
 	m_byteIndex = 0;
 	m_busBusyFlag = false;
+	m_searchROMactiveFlag = false;
 	m_ROMsRdyFlag = false;
 	m_slvsNumber = 0;
+	m_txBuff = nullptr;
+	m_txLen = 0;
+	m_rxBuff = nullptr;
+	m_rxLen = 0;
+	m_transferActiveFlag = false;
+	m_transferIdx = 0;
+	for(uint8_t idx = 0; idx < 9; idx++)	m_opBuff[idx] = 0;
+	m_opBuffLen = 0;
+	m_currentROMcmd = onewireROMcommands_t::CMD_ROM_NONE;
+	m_globalOpState = globalOpState_t::OP_IDLE;
 	m_onewireState = onewireState_t::OW_IDLE;
 
 	//	IOCON OPEN-DRAIN
@@ -52,7 +59,7 @@ OneWire::OneWire(bool port, uint8_t pin) : m_sctimer(SCTimer::sctUNIFIED_MODE, &
 	m_writeTotalSlotTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 60, SCTimer::T_MICRO);
 	m_readStartTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 1, SCTimer::T_MICRO);
 	m_readSampleTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 9, SCTimer::T_MICRO);
-	m_readTotalSlotTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 50, SCTimer::T_MICRO);
+	m_readTotalSlotTicks = m_sctimer.baseToTicks(SCTimer::UNIFIED_COUNTER, 40, SCTimer::T_MICRO);
 
 
 	m_sctimer.enableNVICint();
@@ -66,12 +73,11 @@ void OneWire::clearEventResidue(SCTimer::sctCounter_t counter, SCTimer::sctEvent
 	m_sctimer.clearEventOutputClear(output, event);
 	m_sctimer.disableEventInterrupt(event);
 	m_sctimer.clearEventIntFlag(event);
+	m_sctimer.disableStateEvent(event, SCTimer::sctEVENT_STATE_0);
+	m_sctimer.disableStateEvent(event, SCTimer::sctEVENT_STATE_1);
 }
 
-bool OneWire::resetBus(void){
-	if(m_busBusyFlag)	return false;
-
-	m_busBusyFlag = true;
+void OneWire::startBusReset(void){
 	m_onewireState = onewireState_t::OW_RST;
 	m_presenceFlag = false;
 
@@ -109,6 +115,47 @@ bool OneWire::resetBus(void){
 
 	m_sctimer.clrOutput(SCTimer::sctOUTPUT_0);	//	Set Bus Low
 	m_sctimer.startCounter(SCTimer::UNIFIED_COUNTER);
+}
+
+void OneWire::startBitWriting(bool bit){
+	m_onewireState = onewireState_t::OW_WRITE_BIT;
+
+	OneWire::armBitWrite();		//	Configures SCTimer to Handle Write Op
+	OneWire::fireBitWrite(bit);	//	Sarts SCTimer in Bit Write Mode
+}
+
+void OneWire::startBitReading(void){
+	m_onewireState = onewireState_t::OW_READ_BIT;
+
+	OneWire::armBitRead();		//	Configures SCTimer to Handle Read Op
+	OneWire::fireBitRead();		//	Sarts SCTimer in Bit Read Mode
+}
+
+void OneWire::startByteWriting(uint8_t byte){
+	m_onewireState = onewireState_t::OW_WRITE_BYTE;
+	m_byte = byte;
+	m_byteIndex = 0;
+
+	OneWire::armBitWrite();	//	Configures SCTimer to Handle Write Op
+	OneWire::fireBitWrite(m_byte & 0x1);	//	Starts with the first bit (LSB First)
+}
+
+void OneWire::startByteReading(void){
+	m_onewireState = onewireState_t::OW_READ_BYTE;
+	m_byte = 0;
+	m_byteIndex = 0;
+
+	OneWire::armBitRead();	//	Configures SCTimer to Handle Read Op
+	OneWire::fireBitRead();	//	Sarts SCTimer in Bit Read Mode
+}
+
+bool OneWire::resetBus(void){
+	if(m_busBusyFlag)	return false;
+
+	m_busBusyFlag = true;
+	m_globalOpState = globalOpState_t::OP_BUSY;
+
+	OneWire::startBusReset();
 
 	return true;
 }
@@ -197,10 +244,10 @@ bool OneWire::writeBit(bool bit){
 	if(m_busBusyFlag)	return false;
 
 	m_busBusyFlag = true;
-	m_onewireState = onewireState_t::OW_WRITE_BIT;
+	m_transferActiveFlag = false;
+	m_globalOpState = globalOpState_t::OP_BUSY;
 
-	OneWire::armBitWrite();		//	Configures SCTimer to Handle Write Op
-	OneWire::fireBitWrite(bit);	//	Sarts SCTimer in Bit Write Mode
+	OneWire::startBitWriting(bit);
 
 	return true;
 }
@@ -209,9 +256,10 @@ bool OneWire::readBit(void){
 	if(m_busBusyFlag)	return false;
 
 	m_busBusyFlag = true;
-	m_onewireState = onewireState_t::OW_READ_BIT;
-	OneWire::armBitRead();		//	Configures SCTimer to Handle Read Op
-	OneWire::fireBitRead();		//	Sarts SCTimer in Bit Read Mode
+	m_transferActiveFlag = false;
+	m_globalOpState = globalOpState_t::OP_BUSY;
+
+	OneWire::startBitReading();
 
 	return true;
 }
@@ -219,136 +267,240 @@ bool OneWire::readBit(void){
 bool OneWire::writeByte(uint8_t byte){
 	if(m_busBusyFlag)	return false;
 
-	f_cmdSent = false;
 	m_busBusyFlag = true;
-	m_onewireState = onewireState_t::OW_WRITE_BYTE;
-	m_byte = byte;
-	m_byteIndex = 0;
+	m_globalOpState = globalOpState_t::OP_BUSY;
 
-	OneWire::armBitWrite();	//	Configures SCTimer to Handle Write Op
-	OneWire::fireBitWrite(((m_byte >> m_byteIndex) & 0x1));	//	Starts with the first bit (LSB First)
+	OneWire::startByteWriting(byte);
 
 	return true;
 }
-
-
 
 bool OneWire::readByte(void){
 	if(m_busBusyFlag)	return false;
 
-	f_byteRead = false;
 	m_busBusyFlag = true;
-	m_onewireState = onewireState_t::OW_READ_BYTE;
-	m_byte = 0;
-	m_byteIndex = 0;
+	m_globalOpState = globalOpState_t::OP_BUSY;
 
-	OneWire::armBitRead();	//	Configures SCTimer to Handle Read Op
-	OneWire::fireBitRead();	//	Sarts SCTimer in Bit Read Mode
+	OneWire::startByteReading();
 
 	return true;
 }
 
-/*
-uint8_t OneWire::getCRC(uint8_t *scratchpad, uint8_t len){
-	int i, j;
+bool OneWire::startTransaction(onewireROMcommands_t cmd, const uint8_t *rom, const uint8_t *txBuff, uint8_t txLen, uint8_t *rxBuff, uint8_t rxLen){
+	if(m_busBusyFlag)	return false;
+	if((cmd == onewireROMcommands_t::CMD_MATCH_ROM) && (rom == nullptr))	return false;
+	if(((txLen > 0) && (txBuff == nullptr)) || ((rxLen > 0) && (rxBuff == nullptr)))	return false;
+
+	m_busBusyFlag = true;
+	m_globalOpState = globalOpState_t::OP_BUSY;
+	m_transferActiveFlag = true;
+	m_transferIdx = 0;
+	m_txBuff = txBuff;
+	m_txLen = txLen;
+	m_rxBuff = rxBuff;
+	m_rxLen = rxLen;
+
+	if(cmd == onewireROMcommands_t::CMD_ROM_NONE){
+		m_opBuffLen = 0;
+	}else if(cmd == onewireROMcommands_t::CMD_MATCH_ROM){
+		m_opBuff[0] = cmd;
+		for(uint8_t idx = 0; idx < 8; idx++)
+			m_opBuff[(1 + idx)] = rom[idx];
+		m_opBuffLen = 9;
+	}else{
+		m_opBuff[0] = cmd;
+		m_opBuffLen = 1;
+	}
+
+	OneWire::startBusReset();
+
+	return true;
+}
+
+bool OneWire::readROM(uint8_t *rom){
+	return OneWire::startTransaction(onewireROMcommands_t::CMD_READ_ROM, nullptr, nullptr, 0, rom, 8);
+}
+
+void OneWire::finishOp(globalOpState_t opState){
+	m_onewireState = onewireState_t::OW_IDLE;
+	m_transferActiveFlag = false;
+	m_globalOpState = opState;
+	m_searchROMactiveFlag = false;
+	m_busBusyFlag = false;
+}
+
+bool OneWire::isBusy(void) const{ return m_busBusyFlag; }
+
+bool OneWire::isPresent(void) const{ return m_presenceFlag; }
+
+OneWire::globalOpState_t OneWire::getStatus(void){
+	globalOpState_t ret = m_globalOpState;
+	if(!m_busBusyFlag)	m_globalOpState = globalOpState_t::OP_IDLE;
+	return ret;
+}
+
+uint8_t OneWire::getCRC8(const uint8_t *data, uint8_t len){
 	uint8_t crc = 0;
 
-	for(i = 0; i < len; i++){
-		uint8_t aux = scratchpad[i];	//	Isolates each byte
-		for(j = 0; j < 8; j++){	//	Isolates each bit
+	for(uint8_t idx = 0; idx < len; idx++){
+		uint8_t aux = *data++;	//	Isolates each byte
+		for(uint8_t j = 0; j < 8; j++){	//	Isolates each bit
 			uint8_t mix = ((crc ^ aux) & 0x01);
 			crc >>= 1;
 
-			if(mix){
-				crc ^= 0x8C;
-			}
+			if(mix)	crc ^= 0x8C;
 			aux >>= 1;
 		}
 	}
 	return crc;
 }
 
-void OneWire::startROMsearch(){
-	int i = 0, j = 0;
-	uint8_t crc = 0;
-	m_slvsNumber = 0;
-	for(i = 0; i < 8; i++) m_rom[i] = 0;
-	for(i = 0; i < MAX_SLAVES; i++){
-		for(j = 0; j < 8; j++){
-			m_allROMs[i][j] = 0;
-		}
-	}
-	m_lastDiscrepancyBit = m_searchDirection = 0;
-	m_lastDevice = false;
-	m_ROMsRdy = false;
-
-	while(!m_lastDevice && (m_slvsNumber < MAX_SLAVES)){
-		OneWire::startBusReset();
-		OneWire::startByteWriting(CMD_SEARCH_ROM); // Identifies all slave devices on the bus
-		m_bitNumber = m_bitMask = 1;
-		m_currentDiscrepancyBit = m_byteNumber = 0;
-
-		while(m_byteNumber < 8){ // ROM size
-			OneWire::startBitReading(); // AND between first bit of all slaves
-			m_idBit = m_bit;
-			OneWire::startBitReading(); // AND between the complement of the first bit of all slaves
-			m_ctoBit = m_bit;
-			if(m_idBit && m_ctoBit){ // Both 1
-				return; // Error
-			}else if(!m_idBit && !m_ctoBit){ // Both 0 => Theres conflict
-				if(m_bitNumber == m_lastDiscrepancyBit){ // We are "standing" on a bit we previously had conflict
-					m_searchDirection = 1; // Follow "1" path (cause the first time we find a conflict, we follow "0" path)
-				}else if(m_bitNumber > m_lastDiscrepancyBit){ // Found new conflict, further ahead than previous one
-					m_searchDirection = 0; // Follow "0" path (cause its the first time we found THIS conflict)
-					m_currentDiscrepancyBit = m_bitNumber;
-				}else{ // Previous path to the last time we solved a conflict
-					m_searchDirection = (m_rom[m_byteNumber] & m_bitMask); // Last saved bit
-					if(!m_searchDirection){
-						m_currentDiscrepancyBit = m_bitNumber;
-					}
-				}
-			}else{ // Theres NO conflict
-				m_searchDirection = m_idBit; // Same path for all the IDs ("0" or "1")
-			}
-			if(m_searchDirection){
-				m_rom[m_byteNumber] |= m_bitMask; // Add "1" to the ROM being builded
-			}else{
-				m_rom[m_byteNumber] &= ~m_bitMask; // Add "0" to the ROM being builded
-			}
-			OneWire::startBitWriting(m_searchDirection); // Writes chosen bit (IDs that does NOT have their bit in this position
-														//  with same value as searchDirection, are discarded in the current tree branch)
-			m_bitNumber++;
-			m_bitMask <<= 1;
-
-			if(m_bitMask == 0){ // 8 bits were evaluated
-				m_byteNumber++;
-				m_bitMask = 1;
-			}
-		}
-		m_lastDiscrepancyBit = m_currentDiscrepancyBit; // Next iteration goes through another tree branch (the most distant conflict of the first bit)
-		if(m_lastDiscrepancyBit == 0){ // Theres NO more conflicts
-			m_lastDevice = true;
-		}
-		for(i = 0; i < 8; i++){
-			crc = OneWire::getCRC(m_rom, 7);
-			if(crc != m_rom[7]){
-				continue; // Invalid ROM
-			}else{
-				m_allROMs[m_slvsNumber][i] = m_rom[i]; // Saves found ROM
-			}
-		}
-		m_slvsNumber++;
-	}
-	m_ROMsRdy = true;
+bool OneWire::isCRC8ok(const uint8_t *data, uint8_t len){
+	return (OneWire::getCRC8(data, len) == 0);
 }
 
 
+bool OneWire::searchROM(void){
+	if(m_busBusyFlag)	return false;
 
-bool OneWire::areAllROMsRdy(void) const{ return m_ROMsRdy; }
-*/
+	m_busBusyFlag = true;
+	m_globalOpState = globalOpState_t::OP_BUSY;
+	m_transferActiveFlag = false;
+	m_searchROMactiveFlag = true;
+
+	m_slvsNumber = 0;
+	m_ROMsRdyFlag = false;
+	m_lastDevice = false;
+	m_lastDiscrepancyBit = 0;
+	m_currentDiscrepancyBit = 0;
+	for(uint8_t idx = 0; idx < 8; idx++) m_rom[idx] = 0;
+
+	m_searchROMstate = searchROMstate_t::SRS_RESET;
+
+	OneWire::startBusReset();
+
+	return true;
+}
+
+bool OneWire::areAllROMsRdy(void) const{ return m_ROMsRdyFlag; }
+
+const uint8_t* OneWire::getROM(uint8_t index) const{
+	return (index < m_slvsNumber) ? m_allROMs[index] : nullptr;
+}
+
 uint8_t OneWire::getSlvsNumber(void) const{ return m_slvsNumber; }
 
-uint8_t OneWire::getByte(void) const{ return m_byte; }
+void OneWire::transactionHandler(void){
+	if(m_onewireState == onewireState_t::OW_READ_BYTE){
+		m_rxBuff[m_transferIdx - m_opBuffLen - m_txLen] = m_byte;	//	Saves byte read
+		m_transferIdx++;
+	}else if(m_onewireState == onewireState_t::OW_WRITE_BYTE){
+		m_transferIdx++;
+	}
+
+	uint16_t idx = m_transferIdx;
+
+	if(idx < m_opBuffLen){
+		OneWire::startByteWriting(m_opBuff[idx]);
+	}else if(idx < (m_opBuffLen + m_txLen)){
+		OneWire::startByteWriting(m_txBuff[(idx - m_opBuffLen)]);
+	}else if(idx < (m_opBuffLen + m_txLen + m_rxLen)){
+		OneWire::startByteReading();
+	}else{
+		OneWire::finishOp(globalOpState_t::OP_DONE);
+	}
+}
+
+void OneWire::searchROMhandler(void){
+	switch(m_searchROMstate){
+		case searchROMstate_t::SRS_RESET:	//	Reset Done, Presence OK -> Search ROM Cmd
+			m_searchROMstate = searchROMstate_t::SRS_CMD;
+			OneWire::startByteWriting(onewireROMcommands_t::CMD_SEARCH_ROM);
+			break;
+
+		case searchROMstate_t::SRS_CMD:	//	Cmd Sent -> First ID Bit
+			m_bitNumber = 1;
+			m_currentDiscrepancyBit = 0;
+			m_searchROMstate = searchROMstate_t::SRS_ID;
+			OneWire::startBitReading();
+			break;
+
+		case searchROMstate_t::SRS_ID:	//	ID Bit Read -> Read Complement
+			m_idBit = m_bit;
+			m_searchROMstate = searchROMstate_t::SRS_CMP;
+			OneWire::startBitReading();
+			break;
+
+		case searchROMstate_t::SRS_CMP:	//	Complement Read -> Decide Direction
+			m_ctoBit = m_bit;
+			if(m_idBit && m_ctoBit){ // Both 1 -> Nobody Answered
+				OneWire::finishOp(globalOpState_t::OP_ERROR);
+			}else{
+				uint8_t idx = ((m_bitNumber - 1) >> 3);	//	Byte Number
+				uint8_t mask = (1 << ((m_bitNumber - 1) & 0x7));
+
+				if(m_idBit != m_ctoBit){	// Theres NO conflict (All Slaves Share This Beat)
+					m_searchDirection = m_idBit; // Same path for all the IDs ("0" or "1")
+				}else{	// Both 0 -> Theres conflict
+					if(m_bitNumber < m_lastDiscrepancyBit)
+						m_searchDirection = ((m_rom[idx] & mask) != 0);	// Previous path to the last time a conflict was solved
+					else
+						m_searchDirection = (m_bitNumber == m_lastDiscrepancyBit);	//	"1" if This Bit Had Conflict Before, "0" if This Bit Corresponds to a New Conflict (Decided to Follow "0" Path in Every New Conflict, Could Be the Other Way Around)
+
+					if(!m_searchDirection)
+						m_currentDiscrepancyBit = m_bitNumber;
+				}
+
+				if(m_searchDirection)
+					m_rom[idx] |= mask;		// Add "1" to the ROM being builded
+				else
+					m_rom[idx] &= ~mask;	// Add "0" to the ROM being builded
+
+				m_searchROMstate = searchROMstate_t::SRS_DIR;
+				OneWire::startBitWriting(m_searchDirection);	// Writes chosen bit (IDs that does NOT have their bit in this position with same value as searchDirection, are discarded in the current tree branch)
+			}
+			break;
+
+		case searchROMstate_t::SRS_DIR:	//	Dir Written -> Next Bit, Or Search ROM Finished
+			m_bitNumber++;
+			if(m_bitNumber <= 64){
+				m_searchROMstate = searchROMstate_t::SRS_ID;
+				OneWire::startBitReading();	//	Next Bit
+			}else{
+				if(!OneWire::isCRC8ok(m_rom, 8)){
+					OneWire::finishOp(globalOpState_t::OP_ERROR);
+				}else{
+					for(uint8_t i = 0; i < 8; i++)	m_allROMs[m_slvsNumber][i] = m_rom[i];
+					m_slvsNumber++;
+					m_lastDiscrepancyBit = m_currentDiscrepancyBit;
+					if(!m_lastDiscrepancyBit)
+						m_lastDevice = true;
+
+					if(m_lastDevice || (m_slvsNumber  >= OneWire::MAX_BUS_SLAVES)){
+						m_ROMsRdyFlag = true;
+						OneWire::finishOp(globalOpState_t::OP_DONE);
+					}else{	//	Next Device
+						m_searchROMstate = searchROMstate_t::SRS_RESET;
+						OneWire::startBusReset();
+					}
+				}
+			}
+			break;
+
+		default:
+			//	ERROR
+			break;
+	}
+}
+
+void OneWire::opDone(void){
+	if(m_searchROMactiveFlag)
+		OneWire::searchROMhandler();
+	else if(m_transferActiveFlag)
+		OneWire::transactionHandler();
+	else
+		OneWire::finishOp(globalOpState_t::OP_DONE);
+}
 
 void OneWire::isrCallback(void){
 	if(OneWireInstance)
@@ -366,31 +518,27 @@ void OneWire::isrHandler(void){
 
 		case onewireState_t::OW_RST:
 			m_presenceFlag = ((flags & (1 << SCTimer::sctEVENT_1)) != 0);	//	If Event 1 Occurred, Slave Pulled-Down the Line
-			m_onewireState = onewireState_t::OW_IDLE;
-			f_busRestFinished = true;
-			m_busBusyFlag = false;
+			if(m_presenceFlag)
+				OneWire::opDone();
+			else
+				OneWire::finishOp(globalOpState_t::OP_NO_PRESENCE);
 			break;
 
 		case onewireState_t::OW_WRITE_BIT:
-			m_onewireState = onewireState_t::OW_IDLE;
-			m_busBusyFlag = false;
+			OneWire::opDone();
 			break;
 
 		case onewireState_t::OW_READ_BIT:
 			m_bit = !((flags & (1 << SCTimer::sctEVENT_1)) != 0);	//	COMBMODE_AND -> EVFLAG = 1 if 12us Timer Expired and Bus is Low Level
-			m_onewireState = onewireState_t::OW_IDLE;
-			m_busBusyFlag = false;
+			OneWire::opDone();
 			break;
 
 		case onewireState_t::OW_WRITE_BYTE:
 			m_byteIndex++;
-			if(m_byteIndex < 8){
+			if(m_byteIndex < 8)
 				OneWire::fireBitWrite(((m_byte >> m_byteIndex) & 0x1));	//	Next Bit
-			}else{
-				f_cmdSent = true;
-				m_onewireState = onewireState_t::OW_IDLE;
-				m_busBusyFlag = false;
-			}
+			else
+				OneWire::opDone();
 			break;
 
 		case onewireState_t::OW_READ_BYTE:
@@ -398,13 +546,10 @@ void OneWire::isrHandler(void){
 			m_byte |= (m_bit << m_byteIndex);
 			m_byteIndex++;
 
-			if(m_byteIndex < 8){
+			if(m_byteIndex < 8)
 				OneWire::fireBitRead();	//	Next Bit
-			}else{
-				f_byteRead = true;
-				m_onewireState = onewireState_t::OW_IDLE;
-				m_busBusyFlag = false;
-			}
+			else
+				OneWire::opDone();
 			break;
 
 		default:

@@ -15,21 +15,26 @@
 #include "sctimer.h"
 #include "gpio.h"
 
-extern volatile bool f_busRestFinished;
-extern volatile bool f_cmdSent;
-extern volatile bool f_byteRead;
-
 class OneWire{
 	public:
 		static const uint8_t MAX_BUS_SLAVES = 5;	//	Defines the maximum number of slaves per bus
 
-		enum onewireROMcommands : uint8_t{
+		enum onewireROMcommands_t : uint8_t{
+			CMD_ROM_NONE = 0,
 			CMD_READ_ROM = 0x33,			//	Reads only one slave's 64-bit ROM
 			CMD_MATCH_ROM = 0x55,			//	Address a specific slave device on the bus
 			CMD_RESUME_ROM = 0xA5,			//	Continues comm with the last slave device addressed, saving time by not having to repeat its ROM dir
 			CMD_SKIP_ROM = 0xCC,			//	Address all devices on the bus simultaneously
 			CMD_ALARM_SEARCH_ROM = 0xEC,	//	Identifies the slave device that is in alarm condition
 			CMD_SEARCH_ROM = 0xF0			//	Identifies all slave devices on the bus
+		};
+
+		enum globalOpState_t : uint8_t{
+			OP_IDLE = 0,
+			OP_BUSY,
+			OP_DONE,
+			OP_NO_PRESENCE,
+			OP_ERROR	//	Either No Slave Answered SEARCH_ROM, Or Bad ROM CRC
 		};
 
 	private:
@@ -45,6 +50,7 @@ class OneWire{
 		};
 
 		onewireState_t m_onewireState;
+		globalOpState_t m_globalOpState;
 
 		//	TIMER
 		SCTimer m_sctimer;
@@ -67,18 +73,38 @@ class OneWire{
 		uint8_t m_byteIndex;							//	Saves Which Bit Has to be Managed Next (Read / Write Byte Op)
 
 		//	SEARCH ROM
+		enum searchROMstate_t : uint8_t{
+			SRS_RESET = 0,
+			SRS_CMD,
+			SRS_ID,
+			SRS_CMP,
+			SRS_DIR
+		};
+
+		searchROMstate_t m_searchROMstate;
+
+		volatile bool m_searchROMactiveFlag;
 		volatile bool m_ROMsRdyFlag;		//	SEARCH ROM flag
 		volatile bool m_bit;
 		uint8_t m_lastDiscrepancyBit;
 		uint8_t m_currentDiscrepancyBit;
 		uint8_t m_bitNumber;
-		uint8_t m_byteNumber;
-		uint8_t m_bitMask;
 		volatile bool m_idBit;
 		volatile bool m_ctoBit;
 		volatile bool m_searchDirection;
 		volatile bool m_lastDevice;			//	SEARCH ROM flag
 		uint8_t m_rom[8];					//	Current rom being builded in search rom
+
+		//	BUFFER
+		const uint8_t *m_txBuff;
+		uint8_t m_txLen;
+		uint8_t *m_rxBuff;
+		uint8_t m_rxLen;
+		volatile bool m_transferActiveFlag;
+		uint16_t m_transferIdx;
+		uint8_t m_opBuff[9];	//	Contains cmdROM + ROM
+		uint8_t m_opBuffLen;
+		onewireROMcommands_t m_currentROMcmd;
 
 		void clearEventResidue(SCTimer::sctCounter_t counter, SCTimer::sctEvent_t event, SCTimer::sctRegisterNumber_t reg = SCTimer::sctREGISTER_1, SCTimer::outputNumber_t output = SCTimer::sctOUTPUT_0);	//	Clears Any Limit / Stop Set Before
 
@@ -87,25 +113,44 @@ class OneWire{
 		void armBitRead(void);			//	Prepares SCTimer to Read a Bit
 		void fireBitRead(void);			//	Starts SCTimer Op to Read a Bit
 
+		void startBusReset(void);				//	Starts bus reset (return false if bus is busy)
+		void startBitWriting(bool bit);			//	Starts one bit writing (return false if bus is busy)
+		void startBitReading(void);				//	Starts one bit reading (return false if bus is busy)
+		void startByteWriting(uint8_t byte);	//	Starts one byte writing (return false if bus is busy)
+		void startByteReading(void);			//	Starts one byte reading (return false if bus is busy)
+
+		void transactionHandler(void);	//	Handles OneWire Read / Write Byte
+		void searchROMhandler(void);	//	Handles OneWire Search ROM
+
+		void opDone(void);	//	Handles Next Step After Any Global Op Ends
+
 		static void isrCallback(void);	//	Callback for SCT
 		void isrHandler(void);			//	IRQ Handler
 
 	public:
 		OneWire(bool port, uint8_t pin);		//	Constructor
 
-		bool resetBus(void);					//	Starts bus reset (return false if bus is busy)
-		bool writeBit(bool bit);				//	Starts one bit writing (return false if bus is busy)
-		bool readBit(void);						//	Starts one bit reading (return false if bus is busy)
-		bool writeByte(uint8_t byte);			//	Starts one byte writing (return false if bus is busy)
-		bool readByte(void);					//	Starts one byte reading (return false if bus is busy)
+		bool resetBus(void);			//	Usr Reset Bus
+		bool writeBit(bool bit);		//	Usr Write Bit
+		bool readBit(void);				//	Usr Read Bit
+		bool writeByte(uint8_t byte);	//	Usr Write Byte
+		bool readByte(void);			//	Usr Read Byte
 
-		uint8_t getCRC(uint8_t *scratchpad, uint8_t len);	//	Gets crc byte
+		bool startTransaction(onewireROMcommands_t cmd, const uint8_t *rom, const uint8_t *txBuff, uint8_t txLen, uint8_t *rxBuff, uint8_t rxLen);
+		bool readROM(uint8_t *rom);	//	Reads ROM When Single Slave on the Bus
+		void finishOp(globalOpState_t opState);
 
-		void startROMsearch(void);					//	Searches all salve IDs connected to the bus
+		bool isBusy(void) const;	//	Returns True if State != IDLE
+		bool isPresent(void) const;	//	Returns True if Presence Pulse is Detected
+		globalOpState_t getStatus(void);	//	Returns [m_globalOpState] and Sets it IDLE
+
+		static uint8_t getCRC8(const uint8_t *data, uint8_t len);	//	Gets crc byte
+		static bool isCRC8ok(const uint8_t *data, uint8_t len);		//	Returns True if CRC is OK
+
+		bool searchROM(void);						//	Searches all salve IDs connected to the bus
 		bool areAllROMsRdy(void) const;				//	Returns true if all ROMs are ready
+		const uint8_t* getROM(uint8_t index) const;	//	Returns nullptr if index >= getSlvsNumber()
 		uint8_t getSlvsNumber(void) const;			//	Returns the number of slaves connected
-
-		uint8_t getByte(void) const;				//	Returns [m_byte]
 
 		~OneWire();									//	Destructor
 };
