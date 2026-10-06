@@ -1,3 +1,11 @@
+#include "statistics.h"
+#include "mlx90614.h"
+#include "ds18b20.h"
+#include "wifi.h"
+#include "eth.h"
+#include "serial7segdisp.h"
+#include "linealkeyboard.h"
+#include "matrixkeyboard.h"
 #include "hwinit.h"
 #include "gpio.h"
 #include "pint.h"
@@ -12,14 +20,6 @@
 #include "spi.h"
 #include "sctimer.h"
 #include "string.h"
-#include "statistics.h"
-#include "mlx90614.h"
-#include "ds18b20.h"
-#include "wifi.h"
-#include "eth.h"
-#include "serial7segdisp.h"
-#include "linealkeyboard.h"
-#include "matrixkeyboard.h"
 
 void uploadData(void);
 void heartbeat(void);
@@ -298,7 +298,18 @@ int main(void){
     		uploadDataTimer.startTimer();
     		heartbeatTimer.startTimer();
     	}
-*/    }
+*/
+
+/********************************************************
+ *														*
+ * 						LED RGB							*
+ * 														*
+ ********************************************************/
+
+
+
+
+    }
     return 0 ;
 }
 

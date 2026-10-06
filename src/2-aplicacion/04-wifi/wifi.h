@@ -12,8 +12,8 @@
 #ifndef WIFI_H_
 #define WIFI_H_
 
-#include "uart.h"
 #include "my_string.h"
+#include "uart.h"
 
 class WiFi{
 	public:

@@ -11,17 +11,14 @@
  * 			0x19 is NOT a valid option according to Wiznet datasheet, but if you read again after getting
  * 			0x19 then you get a valid state. Not sure why this happens but added 0x19 as "transient" socket status.
  *
- * 			Using DNS provided by DHCP does not always resolve domain's IP.
- * 			Cause of this, 8.8.8.8 Google's DNS is hardcoded to resolve any domain.
- * 			(1.1.1.1 worked too when tests run)
  */
 
 #ifndef ETH_H_
 #define ETH_H_
 
+#include "my_string.h"
 #include "spi.h"
 #include "systimer.h"
-#include "my_string.h"
 
 #define MAX_SPI_TRANSFER_LEN	128
 
