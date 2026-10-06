@@ -6,7 +6,6 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  *
  *  This code was written to handle onewire bus for DS18B20 temp sensor
- *  Currently, it does NOT work by interrupts, only by polling (10 Jun 2026)
  */
 
 #include "onewire.h"
@@ -358,7 +357,6 @@ uint8_t OneWire::getCRC8(const uint8_t *data, uint8_t len){
 bool OneWire::isCRC8ok(const uint8_t *data, uint8_t len){
 	return (OneWire::getCRC8(data, len) == 0);
 }
-
 
 bool OneWire::searchROM(void){
 	if(m_busBusyFlag)	return false;

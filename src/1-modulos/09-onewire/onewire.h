@@ -6,7 +6,6 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  *
  *  This code was written to handle onewire bus for DS18B20 temp sensor
- *  Currently, it does NOT work by interrupts, only by polling (10 Jun 2026)
  */
 
 #ifndef ONEWIRE_H_

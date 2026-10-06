@@ -5,7 +5,6 @@
  *      Author: Mati3 - LIFEDE - UTN FRBA
  *      Consultas: mmelian@frba.utn.edu.ar
  *
- *  Currently, it does NOT work by interrupts, only by polling (10 Jun 2026)
  */
 
 #ifndef DS18B20_H_
@@ -13,27 +12,46 @@
 
 #include "onewire.h"
 
-#define CMD_CONVERT_T     0x44			//	Initiates temperature conversion
-#define CMD_READ_SCRATCH  0xBE			//	Reads the entire scratchpad (including the CRC byte)
-
 class DS18B20{
+	public:
+		static const uint16_t CONVERSION_TIME_MS = 750;
+
 	private:
+		static const uint8_t CMD_CONVERT_T = 0x44;		//	Initiates temperature conversion
+		static const uint8_t CMD_READ_SCRATCH = 0xBE;	//	Reads the entire scratchpad (including the CRC byte)
+
+		enum dsState_t : uint8_t{
+			DS_IDLE = 0,
+			DS_READING,
+			DS_OK,
+			DS_ERROR
+		};
+
+		dsState_t m_state;
+
 		OneWire &m_owBus;
 
 		uint8_t m_rom[8];
+		bool m_hasRomFlag;
 		uint8_t m_scratchPad[9];
-		uint8_t m_crc;
-		float m_temp;
-		bool m_tempRdy;
+		int16_t m_tempRaw;
+		bool m_tempRdyFlag;
 
 	public:
-		DS18B20(OneWire &bus, const uint8_t rom[8]);	//	Constructor
+		DS18B20(OneWire &bus, const uint8_t *rom = nullptr);	//	Constructor
 
-		static void startTempConversion(OneWire &bus);	//	Starts one-wire temp conversion for all DS18B20 on the bus
+		bool setROM(const uint8_t *rom);		//	Returns False if [rom] is null or busBusy
 
-		float getTemp();	//	Gets one slave temperature
+		static bool startTempConversion(OneWire &bus);	//	Starts one-wire temp conversion for all DS18B20 on the bus. False if busBusy
 
-		bool isTempRdy() const;	//	Returns true if temp was read
+		bool startTempReading(void);	//	Returns False if busBusy or No ROM
+		bool tempRdy(void) const;		//	Returns true if temp was read
+		int16_t getTempRaw(void) const;	//	Gets one slave temperature (no float)
+		float getTemp(void) const;		//	Returns Last Valid Value raw/16
+
+		bool hasError(void) const;		//	Returns True if [m_state] == DS_ERROR
+
+		void processData(void);			//	Analyzes Scratchpad and OneWire Op
 
 		~DS18B20();	//	Destructor
 };

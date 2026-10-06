@@ -24,35 +24,45 @@
 void uploadData(void);
 void heartbeat(void);
 void dnsRetry(void);
+void searchROM(void);
+void convertT(void);
 void readTemp(void);
+void updateDisplay(void);
 
 static bool f_uploadTimerExpired;
 static bool f_heartbeatTimerExpired;
 static bool f_dnsRetryTimerExpired;
+static bool f_searchROMtimerExpired;
+static bool f_convertTempTimerExpired;
 static bool f_readTempTimerExpired;
+static bool f_updateDisplayTimerExpired;
 
 int main(void){
 
 	HW_init();
 
-	Spi spiMaster(0, 22, 0, 21, 0, 26, Spi::SPI_NUMBER_0, 500000, 4);
-	//Spi spiMaster1(0, 16, 0, 17, 0, 18, Spi::SPI_NUMBER_1, 500000, 4);
+	//Spi spiMaster(0, 4, 0, 6, 0, 0, Spi::SPI_NUMBER_0, 500000, 4);
 
-	Eth eth(0, 23, spiMaster);
+	//Eth eth(0, 1, spiMaster);
 
-	Serial7segDisp display(0, 14, spiMaster);
+	//Serial7segDisp display(0, 15, spiMaster);
 
-	//OneWire onewire(0, 23);
+	OneWire onewire(0, 23);
+	DS18B20 ds18b20_1(onewire);	//	No ROM Yet
+	DS18B20 ds18b20_2(onewire);	//	No ROM Yet
+	DS18B20 *dsTempSensors[2] = {&ds18b20_1, &ds18b20_2};
 
 	SysTimer uploadDataTimer(30, SysTimer::SINGLE, SysTimer::T_SEG, uploadData);
 	SysTimer heartbeatTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, heartbeat);
 	SysTimer dnsRetryTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, dnsRetry);
-	SysTimer readTempTimer(2, SysTimer::SINGLE, SysTimer::T_SEG, readTemp);
+	SysTimer searchROMtimer(1, SysTimer::SINGLE, SysTimer::T_SEG, searchROM);
+	SysTimer convertTempTimer(DS18B20::CONVERSION_TIME_MS, SysTimer::SINGLE, SysTimer::T_MILI, convertT);
+	SysTimer readTempTimer(3, SysTimer::SINGLE, SysTimer::T_SEG, readTemp);
+	SysTimer updateDisplayTimer(2, SysTimer::STRING, SysTimer::T_SEG, updateDisplay);
 
 	Gpio ledG(1, 0, Gpio::D_OUTPUT, Gpio::AM_LOW);
 	Gpio ledB(1, 1, Gpio::D_OUTPUT, Gpio::AM_LOW);
 	Gpio ledR(1, 2, Gpio::D_OUTPUT, Gpio::AM_LOW);
-
 
 	ledG.clrPin();
 	ledB.clrPin();
@@ -79,70 +89,144 @@ int main(void){
 	f_uploadTimerExpired = false;
 	f_heartbeatTimerExpired = false;
 	f_dnsRetryTimerExpired = false;
+	f_searchROMtimerExpired = false;
+	f_convertTempTimerExpired = false;
 	f_readTempTimerExpired = false;
+	f_updateDisplayTimerExpired = false;
 
+/*
 	eth.HTTPuploading(false);
 	eth.HTTPheartBeating(false);
 
 	eth.init(mac, Eth::SOCKBUF_2KB, Eth::SOCKBUF_2KB, Eth::MANUAL_CLOSE);
-
+*/
     uploadDataTimer.startTimer();
-    heartbeatTimer.startTimer();
+  	heartbeatTimer.startTimer();
+	updateDisplayTimer.startTimer();
+	searchROMtimer.startTimer();
 	readTempTimer.startTimer();
 
-	float temp = 0;
+	float temps[2] = {0};
+	enum{
+		OW_IDLE,
+		OW_SEARCH,
+		OW_CONVERT,
+		OW_CONVERTING,
+		OW_WAIT,
+		OW_READ_START,
+		OW_READ_WAIT
+	} owState = OW_IDLE;
+	uint8_t slave = 0;
+	uint8_t totalSlvs = 0;
 
-/*	bool f_firstWriteStarted = false;
-	bool f_finishOp = false;
-*/
     while(1){
-    	/*
-    	if(f_readTempTimerExpired){
-    		f_readTempTimerExpired = false;
-    		readTempTimer.stopTimer();
-    		onewire.resetBus();
-    		//readTempTimer.startTimer();
-    	}
-
-    	if(f_busRestFinished && !f_firstWriteStarted && !f_finishOp){
-    		if(onewire.writeByte(OneWire::CMD_SKIP_ROM)){
-    			f_firstWriteStarted = true;
-    		}
-    	}
-
-    	if(f_busRestFinished &&  f_cmdSent && !f_finishOp){
-    		if(onewire.writeByte(0x44)){
-    			f_finishOp = true;
-    		}
-    	}
-
-    	if(f_finishOp && f_cmdSent){
-    		uint8_t i = 0;
-    	}
-*/
 
 /********************************************************
-*														*
-* 					DISPLAY SERIAL						*
-* 														*
-********************************************************/
-    	if(f_readTempTimerExpired){
-    		f_readTempTimerExpired = false;
-    	    readTempTimer.stopTimer();
+ *														*
+ * 				   ONE-WIRE TEMP SENS					*
+ * 														*
+ ********************************************************/
+
+    	switch(owState){
+			case OW_IDLE:
+				if(f_searchROMtimerExpired){
+					f_searchROMtimerExpired = false;
+					searchROMtimer.stopTimer();
+		    		if(onewire.searchROM())
+		    			owState = OW_SEARCH;
+				}
+				break;
+
+			case OW_SEARCH:
+				if(!onewire.isBusy()){
+					if(onewire.getStatus() == OneWire::OP_DONE){
+						totalSlvs = onewire.getSlvsNumber();
+		    			for(uint8_t slv = 0; slv < totalSlvs; slv++){
+		    				dsTempSensors[slv]->setROM(onewire.getROM(slv));
+		    			}
+						owState = OW_CONVERT;
+					}else{
+						owState = OW_IDLE;
+					}
+				}
+				break;
+
+			case OW_CONVERT:
+				if(DS18B20::startTempConversion(onewire))
+					owState = OW_CONVERTING;
+				break;
+
+			case OW_CONVERTING:
+				if(!onewire.isBusy()){
+					if(onewire.getStatus() == OneWire::OP_DONE){
+						convertTempTimer.startTimer();
+						owState = OW_WAIT;
+					}else{
+						owState = OW_IDLE;	//	Nobody Answered
+					}
+				}
+				break;
+
+			case OW_WAIT:
+				if(f_convertTempTimerExpired){
+					f_convertTempTimerExpired = false;
+					convertTempTimer.stopTimer();
+					slave = 0;
+					owState = OW_READ_START;
+				}
+				break;
+
+			case OW_READ_START:
+				if(dsTempSensors[slave]->startTempReading())
+					owState = OW_READ_WAIT;
+				break;
+
+			case OW_READ_WAIT:
+				dsTempSensors[slave]->processData();
+				if(dsTempSensors[slave]->tempRdy() || dsTempSensors[slave]->hasError()){
+					temps[slave] = -1.0f;
+					if(dsTempSensors[slave]->tempRdy())
+						temps[slave] = dsTempSensors[slave]->getTemp();
+					slave++;
+					owState = (slave < totalSlvs) ? OW_READ_START : OW_IDLE;
+				}
+				break;
+
+			default:
+				//	ERROR
+				break;
+    	}
+
+
+/********************************************************
+ *														*
+ * 				   I2C TEMP SENSOR						*
+ * 														*
+ ********************************************************/
+
+
+
+
+/********************************************************
+ *														*
+ * 					 SERIAL DISPLAY						*
+ * 														*
+ ********************************************************/
+/*
+    	if(f_updateDisplayTimerExpired){
+    		f_updateDisplayTimerExpired = false;
     	    temp++;
 
     	    display.setValue(temp);
-
-        	readTempTimer.startTimer();
     	}
-
+*/
 
 /********************************************************
  *														*
  * 					ETHERNET W5500						*
  * 														*
  ********************************************************/
-
+/*
     	eth.stateMachine();
 
     	if(eth.isReady() && !f_solvingDNS){
@@ -214,7 +298,7 @@ int main(void){
     		uploadDataTimer.startTimer();
     		heartbeatTimer.startTimer();
     	}
-    }
+*/    }
     return 0 ;
 }
 
@@ -230,6 +314,18 @@ void dnsRetry(void){
 	f_dnsRetryTimerExpired = true;
 }
 
+void searchROM(void){
+	f_searchROMtimerExpired = true;
+}
+
+void convertT(void){
+	f_convertTempTimerExpired = true;
+}
+
 void readTemp(void){
 	f_readTempTimerExpired = true;
+}
+
+void updateDisplay(void){
+	f_updateDisplayTimerExpired = true;
 }
