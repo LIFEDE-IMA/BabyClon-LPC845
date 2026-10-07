@@ -20,6 +20,7 @@
 #include "spi.h"
 #include "sctimer.h"
 #include "string.h"
+#include "led.h"
 
 void uploadData(void);
 void heartbeat(void);
@@ -27,6 +28,7 @@ void dnsRetry(void);
 void searchROM(void);
 void convertT(void);
 void readTemp(void);
+void readMlxTemp(void);
 void updateDisplay(void);
 
 static bool f_uploadTimerExpired;
@@ -35,6 +37,7 @@ static bool f_dnsRetryTimerExpired;
 static bool f_searchROMtimerExpired;
 static bool f_convertTempTimerExpired;
 static bool f_readTempTimerExpired;
+static bool f_readMlxTempTimerExpired;
 static bool f_updateDisplayTimerExpired;
 
 int main(void){
@@ -52,21 +55,25 @@ int main(void){
 	DS18B20 ds18b20_2(onewire);	//	No ROM Yet
 	DS18B20 *dsTempSensors[2] = {&ds18b20_1, &ds18b20_2};
 
+	I2C i2c0(0, 0, 11, 0, 10, 100000, 30);
+	MLX90614 mlx90614(i2c0);
+
 	SysTimer uploadDataTimer(30, SysTimer::SINGLE, SysTimer::T_SEG, uploadData);
 	SysTimer heartbeatTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, heartbeat);
 	SysTimer dnsRetryTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, dnsRetry);
-	SysTimer searchROMtimer(1, SysTimer::SINGLE, SysTimer::T_SEG, searchROM);
+	SysTimer searchROMtimer(3, SysTimer::SINGLE, SysTimer::T_SEG, searchROM);
 	SysTimer convertTempTimer(DS18B20::CONVERSION_TIME_MS, SysTimer::SINGLE, SysTimer::T_MILI, convertT);
 	SysTimer readTempTimer(3, SysTimer::SINGLE, SysTimer::T_SEG, readTemp);
+	SysTimer readMlxTempTimer(3, SysTimer::SINGLE, SysTimer::T_SEG, readMlxTemp);
 	SysTimer updateDisplayTimer(2, SysTimer::STRING, SysTimer::T_SEG, updateDisplay);
 
-	Gpio ledG(1, 0, Gpio::D_OUTPUT, Gpio::AM_LOW);
-	Gpio ledB(1, 1, Gpio::D_OUTPUT, Gpio::AM_LOW);
-	Gpio ledR(1, 2, Gpio::D_OUTPUT, Gpio::AM_LOW);
+	Led ledG(1, 0, Gpio::AM_LOW);
+	Led ledB(1, 1, Gpio::AM_LOW);
+	Led ledR(1, 2, Gpio::AM_LOW);
 
-	ledG.clrPin();
-	ledB.clrPin();
-	ledR.setPin();
+	ledR.off();
+	ledG.off();
+	ledB.blink(500, Led::T_MILI);
 
 	uint8_t mac[6] = {0x00, 0x08, 0xDC, 0x11, 0x22, 0x32};
 
@@ -92,6 +99,7 @@ int main(void){
 	f_searchROMtimerExpired = false;
 	f_convertTempTimerExpired = false;
 	f_readTempTimerExpired = false;
+	f_readMlxTempTimerExpired = false;
 	f_updateDisplayTimerExpired = false;
 
 /*
@@ -105,6 +113,7 @@ int main(void){
 	updateDisplayTimer.startTimer();
 	searchROMtimer.startTimer();
 	readTempTimer.startTimer();
+	readMlxTempTimer.startTimer();
 
 	float temps[2] = {0};
 	enum{
@@ -119,6 +128,10 @@ int main(void){
 	uint8_t slave = 0;
 	uint8_t totalSlvs = 0;
 
+	float mlxTamb = 0;
+	float mlxTobj = 0;
+	bool f_tempReading = false;
+
     while(1){
 
 /********************************************************
@@ -130,10 +143,11 @@ int main(void){
     	switch(owState){
 			case OW_IDLE:
 				if(f_searchROMtimerExpired){
-					f_searchROMtimerExpired = false;
-					searchROMtimer.stopTimer();
-		    		if(onewire.searchROM())
+		    		if(onewire.searchROM()){
+						f_searchROMtimerExpired = false;
+						searchROMtimer.stopTimer();
 		    			owState = OW_SEARCH;
+		    		}
 				}
 				break;
 
@@ -147,6 +161,7 @@ int main(void){
 						owState = OW_CONVERT;
 					}else{
 						owState = OW_IDLE;
+						searchROMtimer.startTimer();
 					}
 				}
 				break;
@@ -163,6 +178,7 @@ int main(void){
 						owState = OW_WAIT;
 					}else{
 						owState = OW_IDLE;	//	Nobody Answered
+						searchROMtimer.startTimer();
 					}
 				}
 				break;
@@ -188,7 +204,12 @@ int main(void){
 					if(dsTempSensors[slave]->tempRdy())
 						temps[slave] = dsTempSensors[slave]->getTemp();
 					slave++;
-					owState = (slave < totalSlvs) ? OW_READ_START : OW_IDLE;
+					if(slave < totalSlvs){
+						owState = OW_READ_START;
+					}else{
+						owState = OW_IDLE;
+						searchROMtimer.startTimer();
+					}
 				}
 				break;
 
@@ -204,7 +225,28 @@ int main(void){
  * 														*
  ********************************************************/
 
+    	mlx90614.stateMachine();
 
+    	if(!f_tempReading && f_readMlxTempTimerExpired){
+    		f_readMlxTempTimerExpired = false;
+    		readMlxTempTimer.stopTimer();
+
+    		if(mlx90614.readFullTemp())
+    			f_tempReading = true;
+    	}
+
+    	if(f_tempReading && !mlx90614.isBusy()){
+    		f_tempReading = false;
+
+    		if(mlx90614.isDone()){
+    	    	mlxTamb = mlx90614.getTamb();
+    	    	mlxTobj = mlx90614.getTobj();
+    	    	readMlxTempTimer.startTimer();
+    		}else if(mlx90614.hasError()){
+    			MLX90614::mlxStatus_t status = mlx90614.getStatus();
+    			uint8_t i = 0;	//	Brekapoint
+    		}
+    	}
 
 
 /********************************************************
@@ -335,6 +377,10 @@ void convertT(void){
 
 void readTemp(void){
 	f_readTempTimerExpired = true;
+}
+
+void readMlxTemp(void){
+	f_readMlxTempTimerExpired = true;
 }
 
 void updateDisplay(void){
