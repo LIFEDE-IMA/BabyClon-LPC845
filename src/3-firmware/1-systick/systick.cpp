@@ -25,5 +25,5 @@ void SystickInit(){
 
 void SysTick_Handler(void){
 	for(uint8_t idx = 0; idx < TimedPeripheral::timedPeripSources; idx++)
-		timedPeripheral_instances[idx]->handler();
+		timedPeripheral_instances[idx]->tick();
 }

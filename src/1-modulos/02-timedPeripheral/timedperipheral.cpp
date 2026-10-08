@@ -23,6 +23,13 @@ static inline void timedPerCriticalExit(uint32_t primask){	//	Restores Previous 
 }
 
 TimedPeripheral::TimedPeripheral(){
+	//	Object Becomes "Visible" for Systick_Handler() here, but the Derived Class
+	//	is Not Built Yet -> Members Not Initialized. If SysTick Fires Now and Calls
+	//	handler() -> Crash
+	//	Solution: Skip First Tick so Constructor has More Time (One Tick More)
+
+	m_settling = true;
+
 	TimedPeripheral **aux = new TimedPeripheral*[timedPeripSources + 1];	//	Adds new peripheral to the array
 
 	for(uint8_t idx = 0; idx < timedPeripSources; idx++)
@@ -37,6 +44,13 @@ TimedPeripheral::TimedPeripheral(){
 	timedPerCriticalExit(primask);	//	End of Critical Zone
 
 	delete[] old;
+}
+
+void TimedPeripheral::tick(void){
+	if(m_settling)
+		m_settling = false;
+	else
+		handler();
 }
 
 TimedPeripheral::~TimedPeripheral(){

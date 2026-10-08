@@ -13,11 +13,17 @@
 #include <stdint.h>
 
 class TimedPeripheral{
+	private:
+		volatile bool m_settling;	//	True from Construction till First Clk Tick (Object Still Being Built)
+
 	public:
 		TimedPeripheral();
 		~TimedPeripheral();
 
 		virtual void handler(void) = 0;
+
+		void tick(void);	//	Called by SysTick_Handler() Instead of handler(): Skips Objects Not Built Yet
+
 		static uint8_t timedPeripSources;
 
 };

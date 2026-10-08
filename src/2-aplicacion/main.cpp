@@ -29,7 +29,6 @@ void searchROM(void);
 void convertT(void);
 void readTemp(void);
 void readMlxTemp(void);
-void updateDisplay(void);
 
 static bool f_uploadTimerExpired;
 static bool f_heartbeatTimerExpired;
@@ -38,17 +37,16 @@ static bool f_searchROMtimerExpired;
 static bool f_convertTempTimerExpired;
 static bool f_readTempTimerExpired;
 static bool f_readMlxTempTimerExpired;
-static bool f_updateDisplayTimerExpired;
 
 int main(void){
 
 	HW_init();
 
-	//Spi spiMaster(0, 4, 0, 6, 0, 0, Spi::SPI_NUMBER_0, 500000, 4);
+	Spi spiMaster(0, 4, 0, 6, 0, 0, Spi::SPI_NUMBER_0, 500000, 4);
 
 	//Eth eth(0, 1, spiMaster);
 
-	//Serial7segDisp display(0, 15, spiMaster);
+	Serial7segDisp display(0, 15, spiMaster);
 
 	OneWire onewire(0, 23);
 	DS18B20 ds18b20_1(onewire);	//	No ROM Yet
@@ -61,11 +59,10 @@ int main(void){
 	SysTimer uploadDataTimer(30, SysTimer::SINGLE, SysTimer::T_SEG, uploadData);
 	SysTimer heartbeatTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, heartbeat);
 	SysTimer dnsRetryTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, dnsRetry);
-	SysTimer searchROMtimer(3, SysTimer::SINGLE, SysTimer::T_SEG, searchROM);
+	SysTimer searchROMtimer(1, SysTimer::SINGLE, SysTimer::T_SEG, searchROM);
 	SysTimer convertTempTimer(DS18B20::CONVERSION_TIME_MS, SysTimer::SINGLE, SysTimer::T_MILI, convertT);
-	SysTimer readTempTimer(3, SysTimer::SINGLE, SysTimer::T_SEG, readTemp);
-	SysTimer readMlxTempTimer(3, SysTimer::SINGLE, SysTimer::T_SEG, readMlxTemp);
-	SysTimer updateDisplayTimer(2, SysTimer::STRING, SysTimer::T_SEG, updateDisplay);
+	SysTimer readTempTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, readTemp);
+	SysTimer readMlxTempTimer(5, SysTimer::SINGLE, SysTimer::T_SEG, readMlxTemp);
 
 	Led ledG(1, 0, Gpio::AM_LOW);
 	Led ledB(1, 1, Gpio::AM_LOW);
@@ -100,7 +97,6 @@ int main(void){
 	f_convertTempTimerExpired = false;
 	f_readTempTimerExpired = false;
 	f_readMlxTempTimerExpired = false;
-	f_updateDisplayTimerExpired = false;
 
 /*
 	eth.HTTPuploading(false);
@@ -110,9 +106,7 @@ int main(void){
 */
     uploadDataTimer.startTimer();
   	heartbeatTimer.startTimer();
-	updateDisplayTimer.startTimer();
 	searchROMtimer.startTimer();
-	readTempTimer.startTimer();
 	readMlxTempTimer.startTimer();
 
 	float temps[2] = {0};
@@ -127,10 +121,13 @@ int main(void){
 	} owState = OW_IDLE;
 	uint8_t slave = 0;
 	uint8_t totalSlvs = 0;
+	uint8_t measures = 0;
 
 	float mlxTamb = 0;
 	float mlxTobj = 0;
 	bool f_tempReading = false;
+
+	bool f_updateDisplay = false;
 
     while(1){
 
@@ -158,6 +155,7 @@ int main(void){
 		    			for(uint8_t slv = 0; slv < totalSlvs; slv++){
 		    				dsTempSensors[slv]->setROM(onewire.getROM(slv));
 		    			}
+		    			readTempTimer.startTimer();
 						owState = OW_CONVERT;
 					}else{
 						owState = OW_IDLE;
@@ -167,8 +165,13 @@ int main(void){
 				break;
 
 			case OW_CONVERT:
-				if(DS18B20::startTempConversion(onewire))
-					owState = OW_CONVERTING;
+				if(f_readTempTimerExpired){
+					if(DS18B20::startTempConversion(onewire)){
+						f_readTempTimerExpired = false;
+						readTempTimer.stopTimer();
+						owState = OW_CONVERTING;
+					}
+				}
 				break;
 
 			case OW_CONVERTING:
@@ -207,8 +210,14 @@ int main(void){
 					if(slave < totalSlvs){
 						owState = OW_READ_START;
 					}else{
-						owState = OW_IDLE;
-						searchROMtimer.startTimer();
+						measures++;
+						if(measures >= 200){
+							owState = OW_IDLE;
+							searchROMtimer.startTimer();
+						}else{
+							readTempTimer.startTimer();
+							owState = OW_CONVERT;
+						}
 					}
 				}
 				break;
@@ -241,6 +250,7 @@ int main(void){
     		if(mlx90614.isDone()){
     	    	mlxTamb = mlx90614.getTamb();
     	    	mlxTobj = mlx90614.getTobj();
+    	    	f_updateDisplay = true;
     	    	readMlxTempTimer.startTimer();
     		}else if(mlx90614.hasError()){
     			MLX90614::mlxStatus_t status = mlx90614.getStatus();
@@ -254,14 +264,13 @@ int main(void){
  * 					 SERIAL DISPLAY						*
  * 														*
  ********************************************************/
-/*
-    	if(f_updateDisplayTimerExpired){
-    		f_updateDisplayTimerExpired = false;
-    	    temp++;
 
-    	    display.setValue(temp);
+    	if(f_updateDisplay){
+    		f_updateDisplay = false;
+    		float oneDec = ((int)(mlxTobj * 10) / 10.f);
+    	    display.setValue(oneDec);
     	}
-*/
+
 
 /********************************************************
  *														*
@@ -381,8 +390,4 @@ void readTemp(void){
 
 void readMlxTemp(void){
 	f_readMlxTempTimerExpired = true;
-}
-
-void updateDisplay(void){
-	f_updateDisplayTimerExpired = true;
 }

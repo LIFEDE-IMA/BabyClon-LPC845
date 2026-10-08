@@ -148,7 +148,7 @@ class MLX90614{
 		static float fourthRoot(float x, float guess);
 
 		bool canStart(void) const;	//	False if Busy / Sleeping
-		void startEEPROMreading(const uint8_t *cmds, uint8_t count, mlxState_t stateAfter);
+		void startReading(const uint8_t *cmds, uint8_t count, mlxState_t stateAfter);
 		void startEEPROMwriting(uint8_t eepromAddr, uint16_t mask, uint16_t value);	//	Read, Modify, Erase, Write and Verify one EEPROM Cell
 		void armWrite(uint8_t cmd, uint16_t value);
 

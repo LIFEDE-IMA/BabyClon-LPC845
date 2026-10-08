@@ -61,7 +61,7 @@ bool MLX90614::readTamb(void){
 	if(MLX90614::canStart()){
 		uint8_t cmds[1] = {(uint8_t)(MLX90614::CMD_RAM | ramAddress_t::RAM_TAMB)};
 
-		MLX90614::startEEPROMreading(cmds, 1, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, 1, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -73,7 +73,7 @@ bool MLX90614::readTobj(void){
 	if(MLX90614::canStart()){
 		uint8_t cmds[1] = {(uint8_t)(MLX90614::CMD_RAM | ramAddress_t::RAM_TOBJ)};
 
-		MLX90614::startEEPROMreading(cmds, 1, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, 1, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -85,7 +85,7 @@ bool MLX90614::readTobj2(void){
 	if(MLX90614::canStart()){
 		uint8_t cmds[1] = {(uint8_t)(MLX90614::CMD_RAM | ramAddress_t::RAM_TOBJ2)};
 
-		MLX90614::startEEPROMreading(cmds, 1, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, 1, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -102,7 +102,7 @@ bool MLX90614::readFullTemp(void){
 		};
 
 		uint8_t count = m_dualFlag ? 3 : 2;
-		MLX90614::startEEPROMreading(cmds, count, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, count, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -121,7 +121,7 @@ bool MLX90614::readRawIR(uint8_t channel){
 		uint8_t ramAddr = (channel == 1) ? MLX90614::RAM_RAW_IR1 : MLX90614::RAM_RAW_IR2;
 		uint8_t cmds[1] = {(uint8_t)(MLX90614::CMD_RAM | ramAddr)};
 
-		MLX90614::startEEPROMreading(cmds, 1, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, 1, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -130,7 +130,7 @@ bool MLX90614::readRawIR(uint8_t channel){
 int16_t MLX90614::getRawIR(uint8_t channel) const{
 	if(channel == 1)
 		return m_rawIR1;
-	else if(channel = 2)
+	else if(channel == 2)
 		return m_rawIR2;
 	else
 		return -1;
@@ -183,7 +183,7 @@ bool MLX90614::setFilter(FIR_t firSamples){
 bool MLX90614::setBusAddress(uint8_t newAddress){
 	bool started = false;
 
-	if((newAddress != 0) && (newAddress < 0x07) && MLX90614::canStart()){
+	if((newAddress != 0) && (newAddress <= 0x7F) && MLX90614::canStart()){
 		MLX90614::startEEPROMwriting(eepromAddress_t::EE_SMBUS_ADDR, 0x00FF, newAddress);
 		started = true;
 	}
@@ -197,7 +197,7 @@ bool MLX90614::readEEPROM(eepromAddress_t eepromAddress){
 
 	if((eepromAddress <= 0x1F) && MLX90614::canStart()){
 		uint8_t cmds[1] = {(uint8_t)(MLX90614::CMD_EEPROM | eepromAddress)};
-		MLX90614::startEEPROMreading(cmds, 1, mlxState_t::MLX_IDLE);
+		MLX90614::startReading(cmds, 1, mlxState_t::MLX_IDLE);
 		started = true;
 	}
 	return started;
@@ -339,7 +339,7 @@ void MLX90614::stateMachine(void){
 				m_delayTimer.stopTimer();
 
 				uint8_t cmd = (uint8_t)(MLX90614::CMD_EEPROM | m_eepromAddr);
-				MLX90614::startEEPROMreading(&cmd, 1, mlxState_t::MLX_EE_VERIFY);	//	Read Back
+				MLX90614::startReading(&cmd, 1, mlxState_t::MLX_EE_VERIFY);	//	Read Back
 			}
 			break;
 
@@ -388,7 +388,7 @@ bool MLX90614::canStart(void) const{
 	return ((m_mlxState == mlxState_t::MLX_IDLE) && !m_sleepingFlag);
 }
 
-void MLX90614::startEEPROMreading(const uint8_t *cmds, uint8_t count, mlxState_t stateAfter){
+void MLX90614::startReading(const uint8_t *cmds, uint8_t count, mlxState_t stateAfter){
 	for(uint8_t idx = 0; idx < count; idx++)	m_readCmdList[idx] = cmds[idx];
 
 	m_readCount = count;
@@ -405,7 +405,7 @@ void MLX90614::startEEPROMwriting(uint8_t eepromAddr, uint16_t mask, uint16_t va
 	m_eepromMask = mask;
 	m_eepromValue = value;
 
-	MLX90614::startEEPROMreading(&cmd, 1, mlxState_t::MLX_EE_MODIFY);
+	MLX90614::startReading(&cmd, 1, mlxState_t::MLX_EE_MODIFY);
 }
 
 void MLX90614::armWrite(uint8_t cmd, uint16_t value){
@@ -511,7 +511,6 @@ bool MLX90614::storeRead(uint8_t cmd){
 			break;
 
 	}
-
 	return ok;
 }
 

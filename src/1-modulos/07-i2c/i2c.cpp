@@ -33,11 +33,13 @@ I2C::I2C(uint8_t i2cNumber, bool SDAport, uint8_t SDApin, bool SCLport, uint8_t 
 	m_slvRegByte = 0;
 	m_timeoutMs = timeoutMs;
 
-	i2cInstance[i2cNumber] = this;
+	if(m_i2c != nullptr){
+		i2cInstance[i2cNumber] = this;
 
-	I2C::init();
-	I2C::setFreq(freqHz);
-	I2C::enableNVIC_int();
+		I2C::init();
+		I2C::setFreq(freqHz);
+		I2C::enableNVIC_int();
+	}
 }
 
 void I2C::init(){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWITCH MATRIX (Cap. 10), IOCON (Cap. 11), I2C (Cap. 19)
@@ -89,7 +91,7 @@ void I2C::init(){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWITCH MATRIX (Cap. 10), IO
 			SYSCON->PRESETCTRL0 &= ~(1 << 23);	//	RESET I2C3
 			SYSCON->PRESETCTRL0 |= (1 << 23);	//	RELEASE RESET I2C3
 			// Assign I2C pins
-			SWM->PINASSIGN[9] &= ~((0xFF << 16) | (0xFF << 24));		//	Clears
+			SWM->PINASSIGN[10] &= ~((0xFF << 16) | (0xFF << 24));		//	Clears
 			SWM->PINASSIGN[10] |= ((sdaPIO << 16) | (sclPIO << 24));	//	Enables SDA Y SCL
 			break;
 

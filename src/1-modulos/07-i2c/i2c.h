@@ -60,8 +60,8 @@ class I2C{
 		static const uint8_t STAT_MST_NACK_DATA = 0x4;		//	STAT: 3:1
 		static const uint8_t STAT_MSTARBLOSS = (1 << 4);	//	STAT: 4
 		static const uint8_t STAT_MSTMSTPERR = (1 << 6);	//	STAT: 6 (Start / Stop Error)
-		static const uint8_t STAT_EVENTTIMEOUT = (1 << 24);	//	STAT: 24
-		static const uint8_t STAT_SCLTIMEOUT = (1 << 25);	//	STAT: 25
+		static const uint32_t STAT_EVENTTIMEOUT = (1 << 24);	//	STAT: 24
+		static const uint32_t STAT_SCLTIMEOUT = (1 << 25);	//	STAT: 25
 
 		static const uint8_t MSTCTL_CONTINUE = (1 << 0);//	MSTCTL: 0
 		static const uint8_t MSTCTL_START = (1 << 1);	//	MSTCTL: 1
