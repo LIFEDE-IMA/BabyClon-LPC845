@@ -24,11 +24,11 @@ Uart::Uart(uart_t uartNumber, bool rxPort, uint8_t rxPin, bool txPort, uint8_t t
 	m_osr = OSRval;
 
 	m_maxRxLen = Uart::MAX_RX_LEN;
-	for(uint8_t i = 0; i < m_maxRxLen; i++) m_bufferRx[i] = 0;
+	for(uint32_t i = 0; i < m_maxRxLen; i++) m_bufferRx[i] = 0;
 	m_headRxIndex = 0;
 	m_tailRxIndex = 0;
 	m_maxTxLen = Uart::MAX_TX_LEN;
-	for(uint8_t i = 0; i < m_maxTxLen; i++) m_bufferTx[i] = 0;
+	for(uint32_t i = 0; i < m_maxTxLen; i++) m_bufferTx[i] = 0;
 	m_headTxIndex = 0;
 	m_tailTxIndex = 0;
 	m_flagTx = false;
@@ -41,6 +41,13 @@ Uart::Uart(uart_t uartNumber, bool rxPort, uint8_t rxPin, bool txPort, uint8_t t
 	m_footerByte = 0;
 	m_headerByteSentFlag = false;
 	m_footerByteSentFlag = false;
+
+	m_crlfSetFlag = false;
+	m_crlfSentFlag = false;
+	m_crSetFlag = false;
+	m_crSentFlag = false;
+	m_lfSetFlag = false;
+	m_lfSentFlag = false;
 
 	uartInstance[uartNumber] = this;
 
@@ -56,6 +63,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 	uint8_t txPIO = (m_txPin + (m_txPort * 32));
 
 	uint8_t nvicShift = 0;		//	Uart 0
+	uint8_t nvicIPshift = 30;	//	Uart 0
 
 	switch(uartNumber){
 		case uart_t::UART_0:
@@ -67,6 +75,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 			SWM->PINASSIGN[0] &= ~((0xFF << 0) | (0xFF << 8));
 			SWM->PINASSIGN[0] |= ((txPIO << 0) | (rxPIO << 8));	//	Assign RXD and TXD
 			nvicShift = 0;
+			nvicIPshift = 30;
 			break;
 
 		case uart_t::UART_1:
@@ -78,6 +87,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 			SWM->PINASSIGN[1] &= ~((0xFF << 8) | (0xFF << 16));
 			SWM->PINASSIGN[1] |= ((txPIO << 8) | (rxPIO << 16));	//	Assign RXD and TXD
 			nvicShift = 1;
+			nvicIPshift = 6;
 			break;
 
 		case uart_t::UART_2:
@@ -89,6 +99,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 			SWM->PINASSIGN[2] &= ~((0xFF << 16) | (0xFF << 24));
 			SWM->PINASSIGN[2] |= ((txPIO << 16) | (rxPIO << 24));	//	Assign RXD and TXD
 			nvicShift = 2;
+			nvicIPshift = 14;
 			break;
 
 		case uart_t::UART_3:
@@ -102,6 +113,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 			SWM->PINASSIGN[11] |= (txPIO << 24);	//	Assign TXD
 			SWM->PINASSIGN[12] |= (rxPIO << 0);		//	Assign RXD
 			nvicShift = 27;
+			nvicIPshift = 22;
 			break;
 
 		case uart_t::UART_4:
@@ -113,6 +125,7 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 			SWM->PINASSIGN[12] &= ~((0xFF << 16) | (0xFF << 24));
 			SWM->PINASSIGN[12] |= ((txPIO << 16) | (rxPIO << 24));	//	Assign RXD and TXD
 			nvicShift = 28;
+			nvicIPshift = 30;
 			break;
 
 		default:
@@ -134,6 +147,9 @@ void Uart::initUart(uart_t uartNumber){	//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (
 	Uart::disableRxInt();	//	Deshabilita RX interrupts
 	Uart::disableTxInt();	//	Deshabilita TX interrupts
 	Uart::enableRxInt();	//	Habilita RX interrupts
+
+	uint8_t irqNumber = (USART0_IRQn + nvicShift);
+	NVIC->IP[(irqNumber >> 2)] &= ~(3UL << nvicIPshift);	//	Priority = 0
 
 	NVIC->ISER[0] = (1 << (USART0_IRQn + nvicShift));	//	Enable NVIC interrupt
 	m_uart->CFG |= (1 << 0);	//	Enable UARTx
@@ -192,14 +208,69 @@ bool Uart::popTx(uint8_t *data){	//	ISR pops data from tx buffer
 	return false;
 }
 
+bool Uart::sendByte(uint8_t byte){
+	if(Uart::pushTx(byte)){	//	Pushes byte into Tx buffer
+		if(!m_flagTx){
+			m_flagTx = true;	//	Writing Tx buffer
+			Uart::enableTxInt();
+		}
+		return true;
+	}
+	return false;
+}
+
 void Uart::setHeaderByte(uint8_t headerByte){
 	m_headerByteSetFlag = true;
 	m_headerByte = headerByte;
 }
 
+void Uart::clrHeaderByte(void){
+	m_headerByteSetFlag = false;
+}
+
 void Uart::setFooterByte(uint8_t footerByte){
 	m_footerByteSetFlag = true;
 	m_footerByte = footerByte;
+}
+
+void Uart::clrFooterByte(void){
+	m_footerByteSetFlag = false;
+}
+
+void Uart::setCRLF(void){
+	m_crlfSetFlag = true;
+	m_crSetFlag = false;
+	m_lfSetFlag = false;
+}
+
+void Uart::clrCRLF(void){
+	m_crlfSetFlag = false;
+	m_crSetFlag = false;
+	m_lfSetFlag = false;
+}
+
+void Uart::setCR(void){
+	m_crlfSetFlag = false;
+	m_crSetFlag = true;
+	m_lfSetFlag = false;
+}
+
+void Uart::clrCR(void){
+	m_crlfSetFlag = false;
+	m_crSetFlag = false;
+	m_lfSetFlag = false;
+}
+
+void Uart::setLF(void){
+	m_crlfSetFlag = false;
+	m_crSetFlag = false;
+	m_lfSetFlag = true;
+}
+
+void Uart::clrLF(void){
+	m_crlfSetFlag = false;
+	m_crSetFlag = false;
+	m_lfSetFlag = false;
 }
 
 void Uart::sendHeaderByte(void){
@@ -256,9 +327,39 @@ bool Uart::sendStr(const char *msg){
 				return false;
 			}
 		}
+		if(m_crlfSetFlag && !m_crlfSentFlag){
+			if(!m_crSentFlag){
+				if(Uart::sendByte('\r')){
+					m_crSentFlag = true;
+					return false;
+				}
+			}
+			else if(!m_lfSentFlag){
+				if(Uart::sendByte('\n')){
+					m_lfSentFlag = true;
+					m_crlfSentFlag = true;
+					return false;
+				}
+			}
+		}
+		else if(m_crSetFlag && !m_crSentFlag){
+			if(Uart::sendByte('\r')){
+				m_crSentFlag = true;
+				return false;
+			}
+		}
+		else if(m_lfSetFlag && !m_lfSentFlag){
+			if(Uart::sendByte('\n')){
+				m_lfSentFlag = true;
+				return false;
+			}
+		}
 		m_sendPtr = nullptr;
 		m_headerByteSentFlag = false;
 		m_footerByteSentFlag = false;
+		m_crlfSentFlag = false;
+		m_crSentFlag = false;
+		m_lfSentFlag = false;
 		return true;
 	}
 

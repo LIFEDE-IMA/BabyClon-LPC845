@@ -14,6 +14,8 @@
 #include "dr_pll.h"
 #include "systick.h"
 
+#define SHPR3 (*((volatile uint32_t *) 0xE000ED20))	//	ARM Cortex-M0+ System Handler Preiority
+
 void HW_init();
 
 #endif /* HWINIT_H_ */

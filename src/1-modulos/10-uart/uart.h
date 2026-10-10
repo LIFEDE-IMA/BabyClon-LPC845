@@ -33,8 +33,8 @@ class Uart{
 
 		static const uint8_t TOTAL_UART_SOURCES = 5;
 
-		static const uint8_t MAX_RX_LEN = 254;
-		static const uint8_t MAX_TX_LEN = 254;
+		static const uint16_t MAX_RX_LEN = 512;
+		static const uint16_t MAX_TX_LEN = 512;
 
 		static const int8_t NO_DATA_RECEIVED = -1;
 
@@ -63,7 +63,7 @@ class Uart{
 		volatile bool m_flagTx;				//	Filling / Not Filling Tx Buffer
 
 		const char *m_sendPtr;
-		uint8_t m_readIndex;
+		uint16_t m_readIndex;
 
 		bool m_headerByteSetFlag;	//	True if uart trama has a header byte
 		bool m_footerByteSetFlag;	//	True if uart trama has a footer byte
@@ -71,6 +71,13 @@ class Uart{
 		uint8_t m_footerByte;
 		bool m_headerByteSentFlag;
 		bool m_footerByteSentFlag;
+
+		bool m_crlfSetFlag;	//	True if uart trama ends with "\r\n"
+		bool m_crlfSentFlag;
+		bool m_crSetFlag;	//	True if uart trama ends with "\r"
+		bool m_crSentFlag;
+		bool m_lfSetFlag;	//	True if uart trama ends with "\n"
+		bool m_lfSentFlag;
 
 		void initUart(uart_t uartNumber);	//	Initializes UARTx
 
@@ -84,6 +91,8 @@ class Uart{
 		bool pushTx(uint8_t data);	//	App pushes data into tx buffer
 		bool popTx(uint8_t *data);	//	ISR pops data from tx buffer
 
+		bool sendByte(uint8_t byte);
+
 		void sendHeaderByte(void);
 		void sendFooterByte(void);
 
@@ -93,7 +102,16 @@ class Uart{
 		Uart(uart_t uartNumber, bool rxPort, uint8_t rxPin, bool txPort, uint8_t txPin, uint32_t baudrate = 9600, uint8_t OSRval = 0xF);		//	Constructor
 
 		void setHeaderByte(uint8_t headerByte);			//	Uart trama will now have a header byte
+		void clrHeaderByte(void);						//	Uart trama will no more have a header byte
 		void setFooterByte(uint8_t footerByte);			//	Uart trama will now have a footer byte
+		void clrFooterByte(void);						//	Uart trama will no more have a footer byte
+
+		void setCRLF(void);	//	Uart trama will now end with "\r\n"
+		void clrCRLF(void);	//	Uart trama will no more end with "\r\n"
+		void setCR(void);	//	Uart trama will now end with "\r"
+		void clrCR(void);	//	Uart trama will no more end with "\r"
+		void setLF(void);	//	Uart trama will now end with "\n"
+		void clrLF(void);	//	Uart trama will no more end with "\n"
 
 		int16_t receiveByte(void);						//	Returns byte received or -1 if no data was received
 
