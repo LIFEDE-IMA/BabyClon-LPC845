@@ -6,8 +6,8 @@
  *      Consultas: mmelian@frba.utn.edu.ar
  */
 
-#ifndef STRING_H_
-#define STRING_H_
+#ifndef MY_STRING_H_
+#define MY_STRING_H_
 
 #include <stdint.h>
 
@@ -65,4 +65,4 @@ class String{
 		~String();													//	Destroyer
 };
 
-#endif /* STRING_H_ */
+#endif /* MY_STRING_H_ */

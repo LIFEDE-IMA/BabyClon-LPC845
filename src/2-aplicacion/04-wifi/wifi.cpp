@@ -8,77 +8,54 @@
 
 #include "wifi.h"
 
-WiFi::WiFi(Uart &uart) : m_wifiUart(uart){
-	m_initState = initStates_t::iIDLE;
+WiFi::WiFi(Uart &uart) : m_wifiUart(uart), m_timeout(WiFi::STARTUP_DELAY_S, SysTimer::SINGLE, SysTimer::T_SEG){
+	m_initState = initStates_t::iSTARTUP_WAIT;
 	m_uploadState = uploadStates_t::uIDLE;
 	m_wifiError = errors_t::NONE;
 	m_searchIndex = 0;
 	m_wifiInitializedFlag = false;
+	m_wifiUploadingDataFlag = false;
 	m_wifiUploadFinishedFlag = false;
+	m_wifiHeartbeatingFlag = false;
+	m_wifiHeartbeatFinishedFlag = false;
 	for(uint8_t index = 0; index < WiFi::MAX_SRCH_LEN; index++)	m_searchBuffer[index] = '\0';
 	for(uint16_t index = 0; index < WiFi::MAX_AT_CMD_LEN; index++) m_ATcmdBuffer[index] = '\0';
+	for(uint8_t index = 0; index < WiFi::RX_LOG_LEN; index++)	m_rxLog[index] = '\0';
+	m_rxLogIndex = 0;
 }
 
 uint8_t WiFi::search4(const char* target){
 	int16_t recvByte = m_wifiUart.receiveByte();
 
-	if(recvByte != Uart::NO_DATA_RECEIVED){
-		if(m_searchIndex < (WiFi::MAX_SRCH_LEN - 1)){
-			m_searchBuffer[m_searchIndex++] = recvByte;
-			m_searchBuffer[m_searchIndex] = '\0';
-		}else{	//	If searchBuffer fills up, keeps the most recent half to avoid the risk of losing the target
-			for(uint8_t idx = 0; idx < (WiFi::MAX_SRCH_LEN / 2); idx++)
-				m_searchBuffer[idx] = m_searchBuffer[(idx + (MAX_SRCH_LEN / 2))];
+	if(recvByte == Uart::NO_DATA_RECEIVED)	return 0;
 
-			m_searchIndex = (MAX_SRCH_LEN / 2);
-			m_searchBuffer[m_searchIndex] = '\0';
-		}
+	if(m_searchIndex >= (WiFi::MAX_SRCH_LEN - 1)){
+		for(uint8_t idx = 0; idx < (WiFi::MAX_SRCH_LEN / 2); idx++)
+			m_searchBuffer[idx] = m_searchBuffer[(idx + (MAX_SRCH_LEN / 2))];
 
-		if(String::strstr(m_searchBuffer, target)){
-			m_searchIndex = 0;
-			m_searchBuffer[0] = '\0';
-			return WiFi::SRCH_SUCCEED;
-		}
-
-		if(String::strstr(m_searchBuffer,"ALREADY CONNECTED")){
-			m_searchIndex = 0;
-			m_searchBuffer[0] = '\0';
-			return WiFi::SRCH_SUCCEED;
-		}
-
-		if(String::strstr(m_searchBuffer, "ERROR")){
-			m_searchIndex = 0;
-			m_searchBuffer[0] = '\0';
-			return SRCH_FAILED;
-		}
-
-		if(String::strstr(m_searchBuffer, "FAIL")){
-			m_searchIndex = 0;
-			m_searchBuffer[0] = '\0';
-			return SRCH_FAILED;
-		}
+		m_searchIndex = (MAX_SRCH_LEN / 2);
+		m_searchBuffer[m_searchIndex++] = recvByte;
+		m_searchBuffer[m_searchIndex] = '\0';
+	}else{
+		m_rxLog[m_rxLogIndex] = recvByte;
+		m_rxLogIndex = ((m_rxLogIndex + 1) % WiFi::RX_LOG_LEN);
+		m_searchBuffer[m_searchIndex++] = recvByte;
+		m_searchBuffer[m_searchIndex] = '\0';
 	}
 
-	if(String::strstr(target, "CLOSED")){
-		//	If target is closed, server sends too much data so usr app usually
-		//	does not pop rx data faster than isr pushes it (data is lost due to
-		//	speed diff). In order to fix it, tiny blocking for (cpu speed)
-		for(uint8_t index = 0; index < WiFi::MAX_SRCH_LEN; index++){
-			int16_t data = m_wifiUart.receiveByte();
-
-			if(data != -1){
-				if(m_searchIndex < (WiFi::MAX_SRCH_LEN - 1)){
-					m_searchBuffer[m_searchIndex++] = data;
-					m_searchBuffer[m_searchIndex] = '\0';
-				}else{
-					for(uint8_t idx = 0; idx < (WiFi::MAX_SRCH_LEN / 2); idx++)
-						m_searchBuffer[idx] = m_searchBuffer[(idx + (MAX_SRCH_LEN / 2))];
-
-					m_searchIndex = (MAX_SRCH_LEN / 2);
-					m_searchBuffer[m_searchIndex] = '\0';
-				}
-			}
-		}
+	if(String::strstr(m_searchBuffer, target) ||
+	   String::strstr(m_searchBuffer,"ALREADY CONNECTED")){
+		m_searchIndex = 0;
+		m_searchBuffer[0] = '\0';
+		return WiFi::SRCH_SUCCEED;
+	}
+	else if(String::strstr(m_searchBuffer, "ERROR") ||
+			String::strstr(m_searchBuffer, "FAIL")){
+		m_searchIndex = 0;
+		m_searchBuffer[0] = '\0';
+		return SRCH_FAILED;
+	}
+	if(String::strcmp(target, "CLOSED") == 0){
 		if(String::strstr(m_searchBuffer, target, WiFi::MAX_SRCH_LEN)){
 			m_searchIndex = 0;
 			m_searchBuffer[0] = '\0';
@@ -120,10 +97,73 @@ void WiFi::buildAT(String &AT, wifiMode_t wifiMode, initStates_t initState){
 void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 	uint8_t searchAnswer;
 
+	if(m_timeout.singleTimerExpired()){
+		m_timeout.stopTimer();
+		m_searchIndex = 0;
+		m_searchBuffer[0] = '\0';
+
+		switch(m_initState){
+			case initStates_t::iSTARTUP_WAIT:
+				m_initState = initStates_t::iIDLE;	//	Startup Delay
+				break;
+
+			case initStates_t::iWAIT_ATE0_OK:
+			case initStates_t::iWAIT_MODE_OK:
+				m_initState = initStates_t::iIDLE;
+				break;
+
+			case initStates_t::iWAIT_CONNECTED:
+			case initStates_t::iWAIT_GOTIP:
+			case initStates_t::iWAIT_IPOK:
+				m_initState = initStates_t::iSEND_CREDENTIALS;
+				break;
+
+			default:
+				//	ERROR
+				break;
+		}
+	}
+
 	switch(m_initState){
+		case initStates_t::iSTARTUP_WAIT:
+			if(!m_timeout.isRunning()){
+				m_timeout.setTimer(WiFi::STARTUP_DELAY_S);
+				m_timeout.startTimer();
+			}
+			break;
+
 		case initStates_t::iIDLE:{
 			m_wifiInitializedFlag = false;
 			m_wifiMode = wifiMode;
+			String AT(m_ATcmdBuffer, WiFi::MAX_AT_CMD_LEN);
+			AT = "ATE0\r\n";
+
+			if(AT.getError() == String::OK){
+				m_wifiUart.sendStr(m_ATcmdBuffer);	//	Sends first byte
+				m_initState = initStates_t::iWAIT_ATE0;
+			}
+			break;
+		}
+
+		case initStates_t::iWAIT_ATE0:
+			if(m_wifiUart.sendStr(nullptr)){	//	Sends the remaining string
+				m_timeout.setTimer(WiFi::CMD_TIMEOUT_S);
+				m_timeout.startTimer();
+				m_initState = initStates_t::iWAIT_ATE0_OK;
+			}
+			break;
+
+		case initStates_t::iWAIT_ATE0_OK:
+			searchAnswer = WiFi::search4("OK");
+			if(searchAnswer == WiFi::SRCH_SUCCEED){
+				m_initState = initStates_t::iSET_MODE;
+			}else if(searchAnswer == WiFi::SRCH_FAILED){
+				m_wifiError = errors_t::IE_CWMODE;
+				m_initState = initStates_t::iERROR;
+			}
+			break;
+
+		case initStates_t::iSET_MODE:{
 			String AT(m_ATcmdBuffer, WiFi::MAX_AT_CMD_LEN);
 			AT += "AT+CWMODE=";
 			AT += wifiMode;
@@ -138,6 +178,8 @@ void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 
 		case initStates_t::iWAIT_SETMODE:
 			if(m_wifiUart.sendStr(nullptr)){	//	Sends the remaining string
+				m_timeout.setTimer(WiFi::CMD_TIMEOUT_S);
+				m_timeout.startTimer();
 				m_initState = initStates_t::iWAIT_MODE_OK;
 			}
 			break;
@@ -174,12 +216,14 @@ void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 
 		case initStates_t::iWAIT_SENDCRED:
 			if(m_wifiUart.sendStr(nullptr)){	//	Sends the remaining string
-				m_initState = initStates_t::iWAIT_DISCONNECT;
+				m_timeout.setTimer(WiFi::CWJAP_TIMEOUT_S);
+				m_timeout.startTimer();
+				m_initState = initStates_t::iWAIT_GOTIP;
 			}
 			break;
-
+/*
 		case initStates_t::iWAIT_DISCONNECT:
-			searchAnswer = WiFi::search4("DISCONNECT");
+			searchAnswer = WiFi::search4("DISCON");
 			if(searchAnswer == WiFi::SRCH_SUCCEED){
 				m_initState = initStates_t::iWAIT_CONNECTED;
 			}else if(searchAnswer == WiFi::SRCH_FAILED){
@@ -197,7 +241,7 @@ void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 				m_initState = initStates_t::iERROR;
 			}
 			break;
-
+*/
 		case initStates_t::iWAIT_GOTIP:
 			searchAnswer = WiFi::search4("GOT IP");
 			if(searchAnswer == WiFi::SRCH_SUCCEED){
@@ -219,6 +263,8 @@ void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 			break;
 
 		case initStates_t::iDONE:
+			if(!m_wifiInitializedFlag)
+				m_timeout.setTimer(WiFi::UPLOAD_TIMEOUT_S);
 			m_wifiInitializedFlag = true;
 			break;
 
@@ -249,15 +295,20 @@ void WiFi::init(const char* ssid, const char* pass, wifiMode_t wifiMode){
 
 bool WiFi::initFinished() const{ return m_wifiInitializedFlag; }
 
-uint8_t WiFi::buildBody(char *data){
+uint8_t WiFi::buildBody(const char *data){
 	String body(m_httpBody, WiFi::HTTP_MAX_BDY_LEN);
 
 	body += "device=";
 	body += m_httpUsrAgent;			//	m_httpBody = "device=[usrAgent]"
-	body += "&path=";
-	body += m_httpServerDataPath;	//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]"
-	body += "&data=";
-	body += data;					//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]&data=[data]"
+
+	if(data != nullptr){	//	Normal request
+		body += "&path=";				//	m_httpBody = "device=[usrAgent]&path="
+		body += m_httpServerDataPath;	//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]"
+		body += "&data=";				//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data="
+		body += data;					//	m_httpBody = "device=[usrAgent]&path=[serverDataPath]data=[data]"
+	}
+
+	//	Else (data == nullptr) => Heartbeat
 
 	if(body.getError() == String::OK){
 		m_httpBodyLen = body.getLen();
@@ -354,16 +405,57 @@ bool WiFi::closeConnection(){
 	return false;
 }
 
-void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char *serverPath, const char *serverDataPath, const char *device, char *data){
+void WiFi::heartbeat(const char *serverDomain, uint16_t serverPort, const char *serverPath, const char *device){
+	if(m_wifiUploadingDataFlag)	return;
+
+	WiFi::handler(serverDomain, serverPort, serverPath, device);
+}
+
+bool WiFi::heartbeatFinished(void) const{ return m_wifiHeartbeatFinishedFlag; }
+
+void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char *serverPath, const char *serverDataPath, const char *device, const char *data){
+	if(m_wifiHeartbeatingFlag)	return;
+
+	WiFi::handler(serverDomain, serverPort, serverPath, device, serverDataPath, data);
+}
+
+bool WiFi::uploadFinished(void) const{ return m_wifiUploadFinishedFlag; }
+
+void WiFi::handler(const char *serverDomain, uint16_t serverPort,  const char *serverPath, const char *device, const char *serverDataPath, const char *data){
 	uint8_t searchAnswer;
+
+	if(m_timeout.singleTimerExpired()){
+		m_timeout.stopTimer();
+		if(m_uploadState == uploadStates_t::uWAIT_SENDCLOSE){
+			m_searchIndex = 0;
+			m_searchBuffer[0] = '\0';
+			m_uploadState = uploadStates_t::uIDLE;
+		}
+		else if((m_uploadState != uploadStates_t::uIDLE) && (m_uploadState != uploadStates_t::uSEND_CLOSE)){
+			m_wifiError = errors_t::UE_TIMEOUT;
+			m_uploadState = uploadStates_t::uERROR;
+		}
+	}
 
 	switch(m_uploadState){
 		case uploadStates_t::uIDLE:
-			m_wifiUploadFinishedFlag = false;
-			String::strcpy(m_httpServerHost, serverDomain);
+			if(data == nullptr){	//	Heartbeat
+				m_wifiUploadFinishedFlag = false;
+				m_wifiUploadingDataFlag = false;
+				m_wifiHeartbeatFinishedFlag = false;
+				m_wifiHeartbeatingFlag = true;
+			}else{	//	DATA
+				m_wifiHeartbeatFinishedFlag = false;
+				m_wifiHeartbeatingFlag = false;
+				m_wifiUploadFinishedFlag = false;
+				m_wifiUploadingDataFlag = true;
+
+				String::strcpy(m_httpServerDataPath, serverDataPath);
+			}
+
 			m_httpServerPort = serverPort;
+			String::strcpy(m_httpServerHost, serverDomain);
 			String::strcpy(m_httpServerPath, serverPath);
-			String::strcpy(m_httpServerDataPath, serverDataPath);
 			String::strcpy(m_httpUsrAgent, device);
 
 			WiFi::buildBody(data);
@@ -371,6 +463,7 @@ void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char
 
 			if((m_httpBodyLen != 0) && (m_httpRequestLen != 0)){
 				if(WiFi::openConnection()){
+					m_timeout.startTimer();
 					m_uploadState = uploadStates_t::uWAIT_SENDOPEN;
 				}
 			}else{
@@ -440,6 +533,8 @@ void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char
 			}else if(searchAnswer == WiFi::SRCH_FAILED){
 				m_wifiError = errors_t::UE_SENDOK;
 				m_uploadState = uploadStates_t::uERROR;
+			}else if(String::strstr(m_searchBuffer, "+IPD")){
+				m_uploadState = uploadStates_t::uWAIT_200OK;
 			}
 			break;
 
@@ -461,12 +556,20 @@ void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char
 			break;
 
 		case uploadStates_t::uDONE:
+			m_timeout.stopTimer();
 			for(uint8_t i = 0; i < WiFi::MAX_SRCH_LEN; i++)	m_searchBuffer[i] = 0;
 			m_uploadState = uploadStates_t::uIDLE;
-			m_wifiUploadFinishedFlag = true;
+			if(m_wifiHeartbeatingFlag){
+				m_wifiHeartbeatingFlag = false;
+				m_wifiHeartbeatFinishedFlag = true;
+			}else if(m_wifiUploadingDataFlag){
+				m_wifiUploadingDataFlag = false;
+				m_wifiUploadFinishedFlag = true;
+			}
 			break;
 
 		case uploadStates_t::uERROR:
+			m_timeout.stopTimer();
 			switch(m_wifiError){
 				case errors_t::UE_CIPSTART:
 					m_wifiError = errors_t::NONE;
@@ -474,22 +577,19 @@ void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char
 					break;
 
 				case errors_t::UE_CIPSEND:
-					if(m_wifiUart.sendStr("+++")){
-						m_wifiError = errors_t::NONE;	//	All string sent
-						m_uploadState = uploadStates_t::uIDLE;
-					}
-					break;
-
 				case errors_t::UE_SENDOK:
-					if(m_wifiUart.sendStr("+++")){
-						m_wifiError = errors_t::NONE;	//	All string sent
-						m_uploadState = uploadStates_t::uIDLE;
-					}
+					m_wifiError = errors_t::NONE;
+					m_uploadState = uploadStates_t::uSEND_CLOSE;
 					break;
 
 				case errors_t::UE_200OK:
 					m_wifiError = errors_t::NONE;
 					m_uploadState = uploadStates_t::uIDLE;
+					break;
+
+				case errors_t::UE_TIMEOUT:
+					m_wifiError = errors_t::NONE;
+					m_uploadState = uploadStates_t::uSEND_CLOSE;
 					break;
 
 				case errors_t::NONE:
@@ -500,11 +600,26 @@ void WiFi::uploadData(const char *serverDomain, uint16_t serverPort,  const char
 			}
 			break;
 
+		case uploadStates_t::uSEND_CLOSE:
+			if(WiFi::closeConnection()){
+				m_searchIndex = 0;
+				m_searchBuffer[0] = '\0';
+				m_timeout.startTimer();
+				m_uploadState = uploadStates_t::uWAIT_SENDCLOSE;
+			}
+			break;
+
+		case uploadStates_t::uWAIT_SENDCLOSE:
+			searchAnswer = WiFi::search4("OK");	//	Sent by host
+			if((searchAnswer == WiFi::SRCH_SUCCEED) || (searchAnswer == WiFi::SRCH_FAILED)){
+				m_timeout.stopTimer();	//	"OK" if CLOSED, "ERROR" if ALREADY CLOSED
+				m_uploadState = uploadStates_t::uIDLE;
+			}
+			break;
+
 		default:	//	ERROR
 			break;
 	}
 }
-
-bool WiFi::uploadFinished(void) const{ return m_wifiUploadFinishedFlag; }
 
 WiFi::~WiFi(){}
