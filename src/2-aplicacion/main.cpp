@@ -193,6 +193,16 @@ int main(void){
 	volatile uint16_t test2abortCopied = 0;
 	volatile uint16_t test2reuseFailIteration = 0;
 
+	DmaIrqTest dmaIrqTest(18, 17);
+
+	bool f_dmaIrqTestStarted = false;
+	bool f_dmaIrqTestReported = false;
+
+	volatile uint8_t irqTestPassMask = 0;
+	volatile uint8_t irqTestFailMask = 0;
+	volatile uint8_t irqTestFirstFailId = 0;
+	volatile uint32_t irqTestIrqCount = 0;
+
     while(1){
 
 /********************************************************
@@ -630,6 +640,25 @@ int main(void){
     		test2abortCopied = dmaTest2.getAbortCopied();
     		test2reuseFailIteration = dmaTest2.getReuseFailIteration();
     		if(!dmaTest2.allPassed()){
+    			uLedG.off();
+    			uLedR.on();
+    		}
+    	}
+
+    	if(!f_dmaIrqTestStarted && dmaTest.hasFinished() && dmaChainTest.hasFinished() && dmaTest2.hasFinished()){
+    		f_dmaIrqTestStarted = true;
+    		dmaIrqTest.init();
+    	}
+
+    	dmaIrqTest.stateMachine();
+
+    	if(dmaIrqTest.hasFinished() && !f_dmaIrqTestReported){
+    		f_dmaIrqTestReported = true;
+    		irqTestPassMask = dmaIrqTest.getPassMask();
+    		irqTestFailMask = dmaIrqTest.getFailMask();
+    		irqTestFirstFailId = dmaIrqTest.getFirstFailId();
+    		irqTestIrqCount = dmaIrqTest.getIrqCount();
+    		if(!dmaIrqTest.allPassed()){
     			uLedG.off();
     			uLedR.on();
     		}

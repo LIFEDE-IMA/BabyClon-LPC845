@@ -13,6 +13,9 @@ volatile uint8_t Dma::doneAchannels[Dma::DMA_CHANNELS] = {0};
 volatile uint8_t Dma::doneBchannels[Dma::DMA_CHANNELS] = {0};
 volatile uint8_t Dma::errorChannels[Dma::DMA_CHANNELS] = {0};
 
+volatile uint32_t Dma::irqCounter = 0;	//	[DMA TEST] Number of ISR Entries
+
+
 void Dma::init(void){
 	SYSCON->SYSAHBCLKCTRL0 |= (1 << 29);	//	Enables DMA Clk
 	SYSCON->PRESETCTRL0 &= ~(1 << 29);		//	Reset DMA Peripheral
@@ -274,6 +277,8 @@ void Dma::isrHandler(void){
 	uint32_t intA = DMA->INTA0;	//	If Bit n = 1 -> Channel n has Interrupt A Active
 	uint32_t intB = DMA->INTB0;	//	Idem for Interrupt B
 	uint32_t err = DMA->ERRINT0;//	Idem for Error Interrupt
+
+	irqCounter++;	//	[DMA TEST]
 
 	//	Clear Ints
 	DMA->INTA0 = (intA & ~(0x7F << 25));	//	Just in Case Reserved Had "ones"
@@ -1363,6 +1368,458 @@ void DmaTest2::stateMachine(void){
 				DmaTest2::nextTest(m_stateAfterRecover);
 			}
 			break;
+
+		default:
+			m_state = state_t::S_FINISHED;
+			break;
+	}
+}
+
+DmaTest2::~DmaTest2(){}
+
+/*
+ * 									DMA IRQ TEST
+ *
+ *  Check ids (getFirstFailId()):
+ *  				 returned			meaning
+ *
+ *      T_SINGLE 		11 			could not start
+ *      				12 			wrong data
+ *      				13 			ISR entries != 1
+ *      				14 			INTA0 still set after the ISR
+ *               		15 			flag lost
+ *               		16 			error flag
+ *               		17 			flag survived clearFlags()
+ *
+ *      T_BOTH   		20 			could not start
+ *      				21 			ISR entries != 1
+ *      				22 			INTA / INTB not both latched
+ *               		23 			INTA0 / INTB0 still set after the ISR
+ *               		24 			wrong data
+ *              		25 			clearAflags() cleared B too (or did not clear A)
+ *              		26 			clearBflags() did not clear B
+ *
+ *      T_LATE   		30 			could not start
+ *      				31 			first buffer: ISR entries != 1
+ *      				32 			first buffer: wrong flags
+ *      				33 			first buffer: wrong data
+ *               		34 			busy false after the first buffer (reload pending)
+ *               		35 			ISR entries != 2
+ *               		36 			flag A lost while B finished (or B missing)
+ *               		37 			second buffer: wrong data
+ *               		38 			busy false after the second buffer
+ *               		39 			busy after stopDone()
+ *
+ *      T_MANY   		40 			could not start
+ *      				41 			a transfer had wrong data / flags / INTA0 not cleared / error
+ *               		42 			(not used)
+ *               		43 			ISR entries != 200 in total
+ *
+ *      T_NOINT  		50 			could not start
+ *      				51 			ISR entered with the channel interrupt disabled
+ *      				52 			flag not seen by polling
+ *               		53 			INTA0 not set (polling)
+ *               		54 			clearFlags() did not clear INTA0 / the flag
+ *               		55 			wrong data
+ *
+ *      T_TWOCH  		60 			could not start
+ *      				61 			ISR entries != 1
+ *      				62 			channel A: wrong data / flag
+ *      				63 			channel B: wrong data
+ *               		64 			channel B: flag eaten by the ISR
+ *               		65 			error flag
+ *
+ *      Any Test 		99 timeout
+ */
+
+namespace{
+	const uint16_t SETTLE_LOOPS = 200;		//	Passes after the ISR ran: an extra (spurious) ISR entry would show up here
+	const uint16_t MANY = 200;
+
+	uint32_t s_src[8];
+	uint32_t s_dstA[8];
+	uint32_t s_dstB[8];
+
+	Dma::Descriptor s_descA;				//	16-byte aligned by the type
+	Dma::Descriptor s_descB;
+}
+
+DmaIrqTest::DmaIrqTest(uint8_t channelA, uint8_t channelB) : m_dmaA(channelA), m_dmaB(channelB){
+	m_state = state_t::S_IDLE;
+	m_recoverNext = state_t::S_FINISHED;
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_loops = 0;
+	m_irqBase = 0;
+	m_settle = 0;
+	m_iter = 0;
+	m_sub = 0;
+	m_okAccFlag = true;
+}
+
+void DmaIrqTest::init(void){
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_dmaA.enableNVIC_int();	//	The ISR is entered only for channels with their INTENSET0 bit set
+	DmaIrqTest::nextTest(state_t::S_SINGLE_START);
+}
+
+bool DmaIrqTest::hasFinished(void) const{ return (m_state == state_t::S_FINISHED); }
+
+bool DmaIrqTest::allPassed(void) const{ return ((m_state == state_t::S_FINISHED) && (m_pass == testBit_t::T_ALL) && (m_fail == 0)); }
+
+uint8_t DmaIrqTest::getPassMask(void) const{ return m_pass; }
+
+uint8_t DmaIrqTest::getFailMask(void) const{ return m_fail; }
+
+uint8_t DmaIrqTest::getFirstFailId(void) const{ return m_firstFailId; }
+
+uint32_t DmaIrqTest::getIrqCount(void) const{ return Dma::irqCounter; }
+
+void DmaIrqTest::report(testBit_t bit, bool ok){
+	if(ok)	m_pass |= bit;
+	else	m_fail |= bit;
+}
+
+void DmaIrqTest::check(uint8_t id, bool cond){
+	if(!cond){
+		m_okAccFlag = false;
+		if(m_firstFailId == 0)	m_firstFailId = id;
+	}
+}
+
+void DmaIrqTest::nextTest(state_t nextState){
+	m_sub = 0;
+	m_iter = 0;
+	m_loops = 0;
+	m_settle = 0;
+	m_okAccFlag = true;
+	m_state = nextState;
+
+	if(nextState == state_t::S_FINISHED){		//	Leave the DMA interrupt as it was: the test enabled it
+		m_dmaA.disableInt();
+		m_dmaB.disableInt();
+		m_dmaA.disableNVIC_int();
+	}
+}
+
+void DmaIrqTest::finishTest(testBit_t bit, state_t nextState){
+	DmaIrqTest::report(bit, m_okAccFlag);
+	DmaIrqTest::nextTest(nextState);
+}
+
+void DmaIrqTest::timeoutRecover(testBit_t bit, state_t next){
+	DmaIrqTest::report(bit, false);
+	if(m_firstFailId == 0)	m_firstFailId = 99;
+	m_dmaA.requestStop();
+	m_dmaB.requestStop();
+	m_recoverNext = next;
+	m_loops = 0;
+	m_state = state_t::S_RECOVER;
+}
+
+bool DmaIrqTest::fireTest(Dma &dma, const void *src, void *dst, uint16_t count, Dma::wordWidth_t width, Dma::addrInc_t srcInc, Dma::addrInc_t dstInc, uint8_t options, const Dma::Descriptor *next){
+	m_loops = 0;
+	return (dma.setTransfer(src, dst, count, width, srcInc, dstInc, options, next) && dma.startTransfer());
+}
+
+bool DmaIrqTest::hwA(const Dma &dma) const{ return ((DMA->INTA0 & (1u << dma.getChannel())) != 0); }
+
+bool DmaIrqTest::hwB(const Dma &dma) const{ return ((DMA->INTB0 & (1u << dma.getChannel())) != 0); }
+
+uint32_t DmaIrqTest::irqDelta(void) const{ return (Dma::irqCounter - m_irqBase); }
+
+void DmaIrqTest::stateMachine(void){
+	switch(m_state){
+
+		case state_t::S_IDLE:
+		case state_t::S_FINISHED:
+			break;
+
+		/* ======================================= T_SINGLE ======================================= */
+		case state_t::S_SINGLE_START:
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_src[idx] = (0x1A000000u + idx);
+				s_dstA[idx] = 0;
+			}
+			m_dmaA.enableInt();
+			m_irqBase = Dma::irqCounter;
+			if(DmaIrqTest::fireTest(m_dmaA, s_src, s_dstA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1)){
+				m_state = state_t::S_SINGLE_WAIT;
+			}else{
+				DmaIrqTest::check(11, false);
+				DmaIrqTest::finishTest(testBit_t::T_SINGLE, state_t::S_BOTH_START);
+			}
+			break;
+
+		case state_t::S_SINGLE_WAIT:
+			if(m_sub == 0){
+				if(Dma::irqCounter != m_irqBase){		//	The ISR already finished (main cannot run in the middle of it)
+					m_settle = 0;
+					m_sub = 1;
+				}
+			}else if(++m_settle >= SETTLE_LOOPS){
+				DmaIrqTest::check(12, equal32(s_dstA, s_src, 8));
+				DmaIrqTest::check(13, (DmaIrqTest::irqDelta() == 1));
+				DmaIrqTest::check(14, !hwA(m_dmaA));			//	Cleared by the ISR (write 1 to clear)
+				DmaIrqTest::check(15, m_dmaA.aIsDone());		//	but the flag has to survive in the latched array
+				DmaIrqTest::check(16, !m_dmaA.hasError());
+				m_dmaA.clearFlags();
+				DmaIrqTest::check(17, !m_dmaA.aIsDone());
+				DmaIrqTest::finishTest(testBit_t::T_SINGLE, state_t::S_BOTH_START);
+				break;
+			}
+
+			if((m_state == state_t::S_SINGLE_WAIT) && (m_sub == 0) && (++m_loops > TIMEOUT_LOOPS))
+				DmaIrqTest::timeoutRecover(testBit_t::T_SINGLE, state_t::S_BOTH_START);
+			break;
+
+		/* ======================================= T_BOTH ======================================= */
+		case state_t::S_BOTH_START:
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_src[idx] = (0x2B000000u + idx);
+				s_dstA[idx] = 0;
+			}
+			m_irqBase = Dma::irqCounter;
+			if(DmaIrqTest::fireTest(m_dmaA, s_src, s_dstA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1, (Dma::OPT_INTA | Dma::OPT_INTB | Dma::OPT_CLRTRIG))){
+				m_state = state_t::S_BOTH_WAIT;
+			}else{
+				DmaIrqTest::check(20, false);
+				DmaIrqTest::finishTest(testBit_t::T_BOTH, state_t::S_LATE_START);
+			}
+			break;
+
+		case state_t::S_BOTH_WAIT:
+			if(m_sub == 0){
+				if(Dma::irqCounter != m_irqBase){
+					m_settle = 0;
+					m_sub = 1;
+				}
+			}else if(++m_settle >= SETTLE_LOOPS){
+				DmaIrqTest::check(21, (DmaIrqTest::irqDelta() == 1));
+				DmaIrqTest::check(22, (m_dmaA.aIsDone() && m_dmaA.bIsDone()));
+				DmaIrqTest::check(23, (!hwA(m_dmaA) && !hwB(m_dmaA)));
+				DmaIrqTest::check(24, equal32(s_dstA, s_src, 8));
+
+				m_dmaA.clearAflags();
+				DmaIrqTest::check(25, (!m_dmaA.aIsDone() && m_dmaA.bIsDone()));
+				m_dmaA.clearBflags();
+				DmaIrqTest::check(26, !m_dmaA.bIsDone());
+				DmaIrqTest::finishTest(testBit_t::T_BOTH, state_t::S_LATE_START);
+				break;
+			}
+
+			if((m_state == state_t::S_BOTH_WAIT) && (m_sub == 0) && (++m_loops > TIMEOUT_LOOPS))
+				DmaIrqTest::timeoutRecover(testBit_t::T_BOTH, state_t::S_LATE_START);
+			break;
+
+		/* ======================================= T_LATE ======================================= */
+		case state_t::S_LATE_START:{
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_ppSrc[idx] = (0x3C000000u + idx);
+				s_ppA[idx] = 0;
+				s_ppB[idx] = 0;
+			}
+
+			//	Table (A) -> s_descB (B) -> s_descA (A) -> ...   One setTrig() per buffer
+			m_irqBase = Dma::irqCounter;
+			bool f_ok = (Dma::buildDescriptor(s_descA, s_ppSrc, s_ppA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1, (Dma::OPT_INTA | Dma::OPT_CLRTRIG), &s_descB)
+				   && Dma::buildDescriptor(s_descB, s_ppSrc, s_ppB, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1, (Dma::OPT_INTB | Dma::OPT_CLRTRIG), &s_descA)
+				   && DmaIrqTest::fireTest(m_dmaA, s_ppSrc, s_ppA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1, (Dma::OPT_INTA | Dma::OPT_CLRTRIG), &s_descB));
+			if(f_ok){
+				m_state = state_t::S_LATE_WAIT;
+			}else{
+				DmaIrqTest::check(30, false);
+				DmaIrqTest::finishTest(testBit_t::T_LATE, state_t::S_MANY_START);
+			}
+			break;
+		}
+
+		case state_t::S_LATE_WAIT:
+			switch(m_sub){
+				case 0:	//	Waiting for the ISR of buffer A
+					if(Dma::irqCounter != m_irqBase){
+						m_settle = 0;
+						m_sub = 1;
+					}
+					break;
+
+				case 1:	//	Settle, then check A and trigger B WITHOUT consuming A
+					if(++m_settle >= SETTLE_LOOPS){
+						DmaIrqTest::check(31, (DmaIrqTest::irqDelta() == 1));
+						DmaIrqTest::check(32, (m_dmaA.aIsDone() && !m_dmaA.bIsDone()));
+						DmaIrqTest::check(33, equal32(s_ppA, s_ppSrc, 8));
+						DmaIrqTest::check(34, m_dmaA.isBusy());		//	Reload pending
+						m_dmaA.setTrig();				//	Buffer A is deliberately NOT cleared here
+						m_sub = 2;
+						m_loops = 0;
+					}
+					break;
+
+				case 2:	//	Waiting for the ISR of buffer B (a 2nd ISR entry)
+					if(DmaIrqTest::irqDelta() >= 2){
+						m_settle = 0;
+						m_sub = 3;
+					}
+					break;
+
+				default:	//	Settle, then both flags have to be there
+					if(++m_settle >= SETTLE_LOOPS){
+						DmaIrqTest::check(35, (DmaIrqTest::irqDelta() == 2));
+						DmaIrqTest::check(36, (m_dmaA.aIsDone() && m_dmaA.bIsDone()));
+						DmaIrqTest::check(37, equal32(s_ppB, s_ppSrc, 8));
+						DmaIrqTest::check(38, m_dmaA.isBusy());
+						m_dmaA.clearAflags();
+						m_dmaA.clearBflags();
+						m_dmaA.requestStop();
+						m_loops = 0;
+						m_state = state_t::S_LATE_STOPPING;
+					}
+					break;
+			}
+
+			if((m_state == state_t::S_LATE_WAIT) && ((m_sub == 0) || (m_sub == 2)) && (++m_loops > TIMEOUT_LOOPS))
+				DmaIrqTest::timeoutRecover(testBit_t::T_LATE, state_t::S_MANY_START);
+			break;
+
+		case state_t::S_LATE_STOPPING:
+			if(m_dmaA.stopDone()){
+				DmaIrqTest::check(39, !m_dmaA.isBusy());
+				DmaIrqTest::finishTest(testBit_t::T_LATE, state_t::S_MANY_START);
+			}else if(++m_loops > TIMEOUT_LOOPS){
+				DmaIrqTest::report(testBit_t::T_LATE, false);
+				if(m_firstFailId == 0)	m_firstFailId = 99;
+				DmaIrqTest::nextTest(state_t::S_MANY_START);
+			}
+			break;
+
+		/* ======================================= T_MANY ======================================= */
+		case state_t::S_MANY_START:
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_src[idx] = (0x4D000000u + ((uint32_t)m_iter << 8) + idx);
+				s_dstA[idx] = 0;
+			}
+			if(m_iter == 0)	m_irqBase = Dma::irqCounter;
+
+			if(DmaIrqTest::fireTest(m_dmaA, s_src, s_dstA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1)){
+				m_state = state_t::S_MANY_WAIT;
+			}else{
+				DmaIrqTest::check(40, false);
+				DmaIrqTest::finishTest(testBit_t::T_MANY, state_t::S_NOINT_START);
+			}
+			break;
+
+		case state_t::S_MANY_WAIT:
+			if(m_sub == 0){
+				if(Dma::irqCounter >= (m_irqBase + m_iter + 1)){	//	>= : an extra entry is reported by the total (43)
+					bool f_ok = (equal32(s_dstA, s_src, 8) && m_dmaA.aIsDone() && !hwA(m_dmaA) && !m_dmaA.hasError());
+					DmaIrqTest::check(41, f_ok);
+					m_dmaA.clearFlags();
+
+					if(++m_iter >= MANY){
+						m_settle = 0;
+						m_sub = 1;
+					}else{
+						m_state = state_t::S_MANY_START;
+					}
+				}else if(++m_loops > TIMEOUT_LOOPS){
+					DmaIrqTest::timeoutRecover(testBit_t::T_MANY, state_t::S_NOINT_START);
+				}
+			}else if(++m_settle >= SETTLE_LOOPS){
+				DmaIrqTest::check(43, (DmaIrqTest::irqDelta() == MANY));
+				DmaIrqTest::finishTest(testBit_t::T_MANY, state_t::S_NOINT_START);
+			}
+			break;
+
+		/* ======================================= T_NOINT ======================================= */
+		case state_t::S_NOINT_START:
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_src[idx] = (0x5E000000u + idx);
+				s_dstA[idx] = 0;
+			}
+			m_dmaA.disableInt();
+			m_irqBase = Dma::irqCounter;
+			if(DmaIrqTest::fireTest(m_dmaA, s_src, s_dstA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1)){
+				m_state = state_t::S_NOINT_WAIT;
+			}else{
+				DmaIrqTest::check(50, false);
+				DmaIrqTest::finishTest(testBit_t::T_NOINT, state_t::S_TWOCH_START);
+			}
+			break;
+
+		case state_t::S_NOINT_WAIT:
+			if(m_sub == 0){
+				if(m_dmaA.aIsDone()){		//	Polling: INTA0 is set even if the interrupt is disabled
+					m_settle = 0;
+					m_sub = 1;
+				}else if(++m_loops > TIMEOUT_LOOPS){
+					DmaIrqTest::check(52, false);
+					DmaIrqTest::timeoutRecover(testBit_t::T_NOINT, state_t::S_TWOCH_START);
+				}
+			}else if(++m_settle >= SETTLE_LOOPS){
+				DmaIrqTest::check(51, (DmaIrqTest::irqDelta() == 0));
+				DmaIrqTest::check(52, m_dmaA.aIsDone());
+				DmaIrqTest::check(53, hwA(m_dmaA));		//	Nobody cleared it: the ISR was not entered
+				DmaIrqTest::check(55, equal32(s_dstA, s_src, 8));
+				m_dmaA.clearFlags();
+				DmaIrqTest::check(54, (!hwA(m_dmaA) && !m_dmaA.aIsDone()));
+				DmaIrqTest::finishTest(testBit_t::T_NOINT, state_t::S_TWOCH_START);
+			}
+			break;
+
+		/* ======================================= T_TWOCH ======================================= */
+		case state_t::S_TWOCH_START:
+			for(uint8_t idx = 0; idx < 8; idx++){
+				s_src[idx] = (0x6F000000u + idx);
+				s_dstA[idx] = 0;
+				s_dstB[idx] = 0;
+			}
+			m_dmaA.enableInt();		//	Channel A: with interrupt
+			m_dmaB.disableInt();	//	Channel B: polling only
+			m_irqBase = Dma::irqCounter;
+			if((DmaIrqTest::fireTest(m_dmaA, s_src, s_dstA, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1)
+			&& DmaIrqTest::fireTest(m_dmaB, s_src, s_dstB, 8, Dma::WIDTH_32BIT, Dma::INC_1, Dma::INC_1))){
+				m_state = state_t::S_TWOCH_WAIT;
+			}else{
+				DmaIrqTest::check(60, false);
+				DmaIrqTest::finishTest(testBit_t::T_TWOCH, state_t::S_FINISHED);
+			}
+			break;
+
+		case state_t::S_TWOCH_WAIT:
+			if(m_sub == 0){
+				if((Dma::irqCounter != m_irqBase) && m_dmaB.aIsDone()){
+					m_settle = 0;
+					m_sub = 1;
+				}else if(++m_loops > TIMEOUT_LOOPS){
+					DmaIrqTest::check(64, m_dmaB.aIsDone());
+					DmaIrqTest::timeoutRecover(testBit_t::T_TWOCH, state_t::S_FINISHED);
+				}
+			}else if(++m_settle >= SETTLE_LOOPS){
+				DmaIrqTest::check(61, (DmaIrqTest::irqDelta() == 1));
+				DmaIrqTest::check(62, (equal32(s_dstA, s_src, 8) && m_dmaA.aIsDone()));
+				DmaIrqTest::check(63, equal32(s_dstB, s_src, 8));
+				DmaIrqTest::check(64, m_dmaB.aIsDone());	//	The ISR (entered because of A) has to leave B's flag visible
+				DmaIrqTest::check(65, (!m_dmaA.hasError() && !m_dmaB.hasError()));
+				m_dmaA.clearFlags();
+				m_dmaB.clearFlags();
+				DmaIrqTest::finishTest(testBit_t::T_TWOCH, state_t::S_FINISHED);
+			}
+			break;
+
+		/* ======================================= Timeout recovery ======================================= */
+		case state_t::S_RECOVER:{
+			bool a = m_dmaA.stopDone();
+			bool b = m_dmaB.stopDone();
+			if((a && b) || (++m_loops > TIMEOUT_LOOPS)){
+				m_dmaA.clearFlags();
+				m_dmaB.clearFlags();
+				DmaIrqTest::nextTest(m_recoverNext);
+			}
+			break;
+		}
 
 		default:
 			m_state = state_t::S_FINISHED;

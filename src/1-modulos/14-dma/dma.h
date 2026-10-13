@@ -66,6 +66,8 @@ class Dma{
 		static volatile uint8_t doneBchannels[Dma::DMA_CHANNELS];	//	Contains All Channels With INTB Active
 		static volatile uint8_t errorChannels[Dma::DMA_CHANNELS];	//	Contains All Channels With Errors
 
+		static volatile uint32_t irqCounter;	//	[DMA TEST] Number of ISR Entries
+
 	private:
 		//	CFG
 		static const uint8_t CFG_PERIPHREQEN = (1 << 0);
@@ -334,6 +336,72 @@ class DmaTest2{
 		uint16_t getReuseFailIteration(void) const;	//	0xFFFF: No Failure
 
 		~DmaTest2();	//	Destructor
+};
+
+class DmaIrqTest{
+	public:
+		enum testBit_t : uint8_t{
+			T_SINGLE = (1 << 0),	//	1 Transfer with Interrupt: ISR Entered Once, INTA0 Cleared by ISR, aIsDone() Works and clearFlags() Too
+			T_BOTH = (1 << 1),		//	INTA | INTB On the Same Descriptor: ISR Entered Once, Both Flags Handled and Cleared
+			T_LATE = (1 << 2),		//	Ping-Pong: Buffer A Not Cleared Before Buffer B Finishes, Both Flags Have to Survive (2 ISR Entries, 2 Flags)
+			T_MANY = (1 << 3),		//	200 Transfers: 200 ISR Entries (Check Lost / Extra)
+			T_NOINT = (1 << 4),		//	Channel Int Disabled: ISR Has No Entries, Polling Still Should Work
+			T_TWOCH = (1 << 5),		//	Chanel A Interrupt, Channel B Int Disabled: ISR Should Not Clear Bs Flag
+			T_ALL = 0x3F
+		};
+
+	private:
+		enum state_t : uint8_t{
+			S_IDLE = 0,
+			S_SINGLE_START, S_SINGLE_WAIT,
+			S_BOTH_START, S_BOTH_WAIT,
+			S_LATE_START, S_LATE_WAIT, S_LATE_STOPPING,
+			S_MANY_START, S_MANY_WAIT,
+			S_NOINT_START, S_NOINT_WAIT,
+			S_TWOCH_START, S_TWOCH_WAIT,
+			S_RECOVER,
+			S_FINISHED
+		};
+
+		Dma m_dmaA;
+		Dma m_dmaB;
+		volatile state_t m_state;
+		state_t m_recoverNext;
+		volatile uint8_t m_pass;
+		volatile uint8_t m_fail;
+		volatile uint8_t m_firstFailId;
+		uint32_t m_loops;
+		uint32_t m_irqBase;		//	Dma::irqCount When the Transfer Was Started
+		uint16_t m_settle;		//	Passes Waited After the ISR Ran, to Catch Extra (Spurious) ISR Entries
+		uint16_t m_iter;
+		uint8_t m_sub;
+		bool m_okAccFlag;
+
+		void report(testBit_t bit, bool ok);
+		void check(uint8_t id, bool cond);
+		void nextTest(state_t nextState);
+		void finishTest(testBit_t bit, state_t nextState);
+		void timeoutRecover(testBit_t bit, state_t nextState);
+		bool fireTest(Dma &dma, const void *src, void *dst, uint16_t count, Dma::wordWidth_t width, Dma::addrInc_t srcInc, Dma::addrInc_t dstInc, uint8_t options = (Dma::OPT_INTA | Dma::OPT_CLRTRIG), const Dma::Descriptor *next = nullptr);
+		bool hwA(const Dma &dma) const;		//	INTA0 Register Bit of the Channel (Not the Latched Flag)
+		bool hwB(const Dma &dma) const;
+		uint32_t irqDelta(void) const;
+
+	public:
+		DmaIrqTest(uint8_t channelA = 18, uint8_t channelB = 17);	//	Constructor
+
+		void init(void);	//	Enables DMA Interrupts in NVIC
+
+		void stateMachine(void);	//	Test Handler
+
+		bool hasFinished(void) const;
+		bool allPassed(void) const;
+		uint8_t getPassMask(void) const;
+		uint8_t getFailMask(void) const;
+		uint8_t getFirstFailId(void) const;
+		uint32_t getIrqCount(void) const;
+
+		~DmaIrqTest();	//	Destructor
 };
 
 #endif /* DMA_H_ */
