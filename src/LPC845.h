@@ -445,4 +445,43 @@ typedef struct{
 
 #define ACMP	((ACMP_Type *) 0x40024000u)
 
+typedef struct{
+	volatile uint32_t CTRL;			//	DMA Control
+	volatile uint32_t INTSTAT;		//	Interrupt Status
+	volatile uint32_t SRAMBASE;		//	SRAM Address of the Channel Configuration Table
+			 uint32_t RESERVED_0[5];
+	volatile uint32_t ENABLESET0;	//	Channel Enable Read and Set for All DMA Channels
+			 uint32_t RESERVED_1;
+	volatile uint32_t ENABLECLR0;	//	Channel Enable Clear for All DMA Channels
+			 uint32_t RESERVED_2;
+	volatile uint32_t ACTIVE0;		//	Channel Active Status for all DMA Channels
+			 uint32_t RESERVED_3;
+	volatile uint32_t BUSY0;		//	 Channel Busy Status for all DMA Channels
+			 uint32_t RESERVED_4;
+	volatile uint32_t ERRINT0;		//	Error Interrupt Status for All DMA Channels
+			 uint32_t RESERVED_5;
+	volatile uint32_t INTENSET0;	//	Interrupt Enable Read and Set for All DMA Channels
+			 uint32_t RESERVED_6;
+	volatile uint32_t INTENCLR0;	//	Interrupt Enable Clear for All DMA Channels
+			 uint32_t RESERVED_7;
+	volatile uint32_t INTA0;		//	Interrupt A Status for All DMA Channels
+			 uint32_t RESERVED_8;
+	volatile uint32_t INTB0;		//	Interrupt B Status for All DMA Channels
+			 uint32_t RESERVED_9;
+	volatile uint32_t SETVALID0;	//	Set ValidPending Control Bits for All DMA Channels
+			 uint32_t RESERVED_10;
+	volatile uint32_t SETTRIG0;		//	Set Trigger Control Bits for All DMA Channels
+			 uint32_t RESERVED_11;
+	volatile uint32_t ABORT0;		//	Channel Abort Control for All DMA Channels
+			 uint32_t RESERVED_12[225];
+	struct{
+		volatile uint32_t CFG;		//	Configuration Register for DMA Channel n
+		volatile uint32_t CTLSTAT;	//	Control and Status Register for DMA Channel n
+		volatile uint32_t XFERCFG;	//	Transfer Configuration Register for DMA Channel n
+				 uint32_t RESERVED;
+	} CHANNEL[25];
+} DMA_Type;
+
+#define DMA	((DMA_Type *) 0x50008000u)
+
 #endif /* LPC845_H_ */
