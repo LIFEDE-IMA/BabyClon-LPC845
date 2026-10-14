@@ -35,7 +35,7 @@ LPC845 code
 - COMPARATOR
 
 ##  NOTES:
-1. When trying to use every module at the same time flash size error may appear, configuring Project->Properties ->C/C++ Build->Settings->MCU C++ Compiler->Optimization->Optimization Level = Optimize for size (-Os) would fix it. Just check all "volatile" variables are, indeed, volatile (avoiding optimization for size issues).
+1. When trying to use every module at the same time flash size error may appear, configuring Project->Properties  ->C/C++ Build->Settings->MCU C++ Compiler->Optimization->Optimization Level = Optimize for size (-Os) would fix it. Just check all "volatile" variables are, indeed, volatile (avoiding optimization for size issues).
 
 2. When using hardfault.cpp, debugging session will not show up hardFault() interrupt. To know if hardFault error occurred and where, breakpoint in line 72 inside hardfault.cpp ("while(1);	// halt here on purpose - read the globals above with the debugger") is needed. To have normal hardFault() behavior, comment out (or delete) hardfault.cpp.
 
