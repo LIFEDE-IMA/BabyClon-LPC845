@@ -13,10 +13,10 @@
 SCTimer *SCTinstance = nullptr;
 
 //	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (Cap. 10), INPUT MUX (Cap. 14), SCTIMER (Cap. 21)
-SCTimer::SCTimer(sctOpMode_t opMode, void (*usrHandler)(void), bool setInputTrigger, bool setOutputTrigger){
+SCTimer::SCTimer(sctOpMode_t opMode, void (*isrHandler)(void), bool setInputTrigger, bool setOutputTrigger){
 	SCTinstance = this;
 
-	m_usrHandler = usrHandler;
+	m_isrHandler = isrHandler;
 
 	m_sctOpMode = opMode;
 	m_sctClkMode = sctClkMode_t::sctCLKMODE_SYSTEM;		//	Default
@@ -357,6 +357,51 @@ void SCTimer::enableConflictInterrupt(outputNumber_t output) const{ SCT->CONEN |
 
 void SCTimer::disableConflictInterrupt(outputNumber_t output) const{ SCT->CONEN &= ~(1 << output); }
 
+void SCTimer::enableDmaRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request, sctEvent_t event) const{
+	if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA0){
+		SCT->DMAREQ[0] |= (1u << event);
+	}
+	else if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA1){
+		SCT->DMAREQ[1] |= (1u << event);
+	}
+}
+
+void SCTimer::disableDmaRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request, sctEvent_t event) const{
+	if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA0){
+		SCT->DMAREQ[0] &= ~(1u << event);
+	}
+	else if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA1){
+		SCT->DMAREQ[1] &= ~(1u << event);
+	}
+}
+
+void SCTimer::enableDmaReloadRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const{
+	if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA0){
+		SCT->DMAREQ[0] |= (1u << 30);
+	}
+	else if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA1){
+		SCT->DMAREQ[1] |= (1u << 30);
+	}
+}
+
+void SCTimer::disableDmaReloadRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const{
+	if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA0){
+		SCT->DMAREQ[0] &= ~(1u << 30);
+	}
+	else if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA1){
+		SCT->DMAREQ[1] &= ~(1u << 30);
+	}
+}
+
+bool SCTimer::isDmaRequestPending(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const{
+	if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA0){
+		return ((SCT->DMAREQ[0] >> 31) & 0x1);
+	}
+	else if(request == InMux::DMA_TRIGGER_INPUT_SOURCE_t::SCT_DMA1){
+		return ((SCT->DMAREQ[1] >> 31) & 0x1);
+	}
+}
+
 void SCTimer::setReload(sctRegisterNumber_t reg, uint32_t reloadValue) const{
 	bool regmode = (((SCT->REGMODE.REGMODE_L) >> reg) & 0x1);
 	if(regmode == sctRegsiterMode_t::regMATCH_MODE){
@@ -616,8 +661,8 @@ void SCTimer::clrStop(sctCounter_t counter, sctEvent_t event) const{
 }
 
 void SCTimer::isrHandler(void){
-	if(m_usrHandler)
-		m_usrHandler();
+	if(m_isrHandler)
+		m_isrHandler();
 }
 
 void SCT_IRQHandler(void){

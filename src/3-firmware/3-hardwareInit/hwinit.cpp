@@ -20,6 +20,17 @@ static void NVIC_setDefaultPriorities(void){
 
 	SHPR3 &= ~(3UL << 30);
 	SHPR3 |= (1UL << 30);	//	Systick Priority 1
+
+	//	UARTs Stay at Highest Priority (0), Even if Their Constructors Ran First
+	const uint8_t uartIrqs[] = {
+		(uint8_t)(USART0_IRQn + 0),
+		(uint8_t)(USART0_IRQn + 1),
+		(uint8_t)(USART0_IRQn + 2),
+		(uint8_t)(USART0_IRQn + 27),
+		(uint8_t)(USART0_IRQn + 28)
+	};
+	for(uint8_t irq : uartIrqs)	//	Copy every [uartIrqs] into [irq]
+		NVIC->IP[irq >> 2] &= ~(3UL << (((irq & 3) * 8) + 6));
 }
 
 void HW_init(){

@@ -10,6 +10,9 @@
 #define DMA_H_
 
 #include "inmux.h"
+#include "sctimer.h"	//	Just for testing input trigger
+#include "pint.h"		//	Idem
+#include "gpio.h"		//	Idem
 
 #if defined (__cplusplus)
 extern "C" {
@@ -157,6 +160,10 @@ class Dma{
 
 		~Dma();	//	Destructor
 };
+
+
+/*		------------------ DMA TESTING CLASSES ------------------
+
 
 class DmaTest{
 	public:
@@ -402,6 +409,133 @@ class DmaIrqTest{
 		uint32_t getIrqCount(void) const;
 
 		~DmaIrqTest();	//	Destructor
+};
+*/
+
+class DmaSctTest{
+	public:
+		enum testBit_t : uint8_t{
+			T_FIRST = (1 << 0),		//	T_FIRST: after the 1st event exactly ONE word was written (single transfer per trigger)
+			T_COMPLETE = (1 << 1),	//	T_COMPLETE: the transfer completes (INTA) after 16 events (not before, not never)
+			T_LATENCY = (1 << 2),	//	T_LATENCY: all 16 words were captured right after an event (< 100 us), none left untouched
+			T_ALL = 0x7
+		};
+
+		static const uint8_t WORDS = 16;
+
+	private:
+		enum state_t : uint8_t{
+			S_IDLE = 0,
+			S_WAIT_FIRST,
+			S_SETTLE_FIRST,
+			S_WAIT_DONE,
+			S_SETTLE_DONE,
+			S_FINISHED
+		};
+
+		SCTimer m_sct;
+		Dma m_dma;
+		Dma::trigPolarity_t m_polarity;
+		Dma::trigType_t m_type;
+		volatile state_t m_state;
+		volatile uint8_t m_pass;
+		volatile uint8_t m_fail;
+		volatile uint8_t m_firstFailId;
+		volatile uint8_t m_wordsAtFirst;
+		volatile uint8_t m_drqAtFirst;
+		volatile uint32_t m_eventsAtDone;
+		volatile uint32_t m_maxLatency;
+		uint32_t m_loops;
+		uint16_t m_settle;
+		bool m_okAccFlag;
+
+		static void onSctEvent(void);	//	SCT event 0 interrupt: counts events and clears the flag
+
+		void report(testBit_t bit, bool ok);
+		void check(uint8_t id, bool cond);
+		uint8_t wordsWritten(void) const;
+		void shutdown(void);
+
+	public:
+		DmaSctTest(uint8_t channel = 16, Dma::trigPolarity_t polarity = Dma::TRIGPOL_HIGH_RISING, Dma::trigType_t type = Dma::TRIGTYPE_EDGE);	//	Constructor
+
+		void init(void);			//	Arms the DMA channel and starts the SCT
+		void stateMachine(void);	//	Test Handler
+
+		bool hasFinished(void) const;
+		bool allPassed(void) const;
+		uint8_t getPassMask(void) const;
+		uint8_t getFailMask(void) const;
+		uint8_t getFirstFailId(void) const;
+		uint8_t getWordsAtFirstEvent(void) const;
+		uint8_t getDrqAtFirstEvent(void) const;		//	DRQ0 state (SCT DMAREQ0 bit 31) 200 passes after the first event
+		uint32_t getEventsAtDone(void) const;
+		uint32_t getMaxLatencyTicks(void) const;
+
+		~DmaSctTest();	//	Destructor
+};
+
+class DmaPintTest{
+	public:
+		enum testBit_t : uint8_t{
+			T_ISR = (1 << 0),
+			T_DMA = (1 << 1),
+			T_ALL = 0x03
+		};
+
+		static const uint8_t WORDS = 16;
+
+	private:
+		enum state_t : uint8_t{
+			S_IDLE = 0,
+			S_WAIT_PRESSES,		//	Armed: waiting for the button
+			S_SETTLE,
+			S_STOPPING,
+			S_FINISHED
+		};
+
+		Pint m_pint;
+		Dma m_dma;
+
+		InMux::DMA_TRIGGER_INPUT_SOURCE_t m_trigger;
+		Dma::trigPolarity_t m_polarity;
+		Dma::trigType_t m_type;
+		bool m_port;
+		uint8_t m_pin;
+		bool m_sourceOk;
+		volatile state_t m_state;
+		volatile uint8_t m_pass;
+		volatile uint8_t m_fail;
+		volatile uint8_t m_firstFailId;
+		volatile uint32_t m_eventsAtDone;
+		volatile uint8_t m_lowWords;
+		uint32_t m_loops;
+		uint16_t m_settle;
+		bool m_okAcc;
+
+		static void onPintEvent(void);	//	Pint handler: counts events
+
+		void report(testBit_t bit, bool ok);
+		void check(uint8_t id, bool cond);
+
+	public:
+		DmaPintTest(bool port = 0, uint8_t pin = 4, Pint::pintSource_t source = Pint::PINTSEL4, uint8_t channel = 15, Dma::trigPolarity_t polarity = Dma::TRIGPOL_HIGH_RISING, Dma::trigType_t type = Dma::TRIGTYPE_EDGE);
+
+		void init(void);			//	Arms the DMA channel and starts the pulses
+
+		void stateMachine(void);	//	Test handler
+
+		bool hasFinished(void) const;
+		bool allPassed(void) const;
+		uint8_t getPassMask(void) const;
+		uint8_t getFailMask(void) const;
+		uint8_t getFirstFailId(void) const;
+		uint32_t getEvents(void) const;			//	Live: Pint interrupts so far
+		uint32_t getEventsAtDone(void) const;
+		uint8_t getWordsWritten(void) const;
+		uint8_t getLowWords(void) const;
+
+		~DmaPintTest();
 };
 
 #endif /* DMA_H_ */

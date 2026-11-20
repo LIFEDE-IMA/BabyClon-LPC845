@@ -14,6 +14,8 @@ uint32_t SysTimer::randomTick = 0;
 
 SysTimer::SysTimer(uint32_t time, shotType_t shot, timeBase_t base, void (*handler)(void)){	//	SYSCON (Cap. 8), SYSTICK (Cap. 25)
 	m_base = base;
+	m_value = 0;
+	m_reload = 0;
 	SysTimer::baseToTicks(time);
 	m_time = 0;
 	m_handler = handler;
@@ -22,6 +24,8 @@ SysTimer::SysTimer(uint32_t time, shotType_t shot, timeBase_t base, void (*handl
 }
 
 void SysTimer::baseToTicks(uint32_t time){
+	m_value = time;
+
 	switch(m_base){
 		case timeBase_t::T_MILI:
 			m_reload = time;
@@ -52,8 +56,22 @@ void SysTimer::startTimer(){
 
 void SysTimer::stopTimer(){ m_time = 0; }
 
+void SysTimer::setTimeBase(timeBase_t base){
+	SysTimer::stopTimer();
+	m_base = base;
+	SysTimer::baseToTicks(m_value);	//	Same Value Reinterpreted in the New Base
+	m_timerExpiredFlag = false;
+}
+
 void SysTimer::setTimer(uint32_t time){
 	SysTimer::stopTimer();
+	SysTimer::baseToTicks(time);
+	m_timerExpiredFlag = false;
+}
+
+void SysTimer::setTimer(uint32_t time, timeBase_t base){
+	SysTimer::stopTimer();
+	m_base = base;
 	SysTimer::baseToTicks(time);
 	m_timerExpiredFlag = false;
 }
@@ -84,10 +102,12 @@ SysTimer& SysTimer::operator+=(const uint32_t time){
 	m_timerExpiredFlag = false;
 
 	uint32_t aux = m_reload;
+	uint32_t auxValue = m_value;
 
 	SysTimer::baseToTicks(time);
 
 	m_reload += aux;
+	m_value += auxValue;
 
 	return *this;
 }

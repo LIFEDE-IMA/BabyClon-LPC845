@@ -31,6 +31,7 @@ class SysTimer : public TimedPeripheral{
 
 	private:
 		uint32_t m_time;
+		uint32_t m_value;	//	Time Asked by User, It Needs to be Read Always With [m_base]
 		uint32_t m_reload;
 		shotType_t m_shot;
 		timeBase_t m_base;
@@ -45,9 +46,12 @@ class SysTimer : public TimedPeripheral{
 
 		void startTimer();					//	Enables SysTick_Handler app
 		void stopTimer();					//	SysTick_Handler is left with no effect
+		void setTimeBase(timeBase_t base);	//	Sets [m_base]
 		void setTimer(uint32_t time);		//	Sets [m_reload]
+		void setTimer(uint32_t time, timeBase_t base);	//	Sets both [m_reload] and [m_base]
 		bool singleTimerExpired();			//	Returns [m_timerExpiredFlag], ONLY for SINGLE TIMER shotType_t
 		bool isRunning() const;				//	Returns True if Timer was Started
+
 
 		SysTimer& operator=(const uint32_t time);		//	Operator '=' overload
 		SysTimer& operator+=(const uint32_t time);		//	Operator '+=' overload

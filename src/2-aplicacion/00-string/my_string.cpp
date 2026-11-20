@@ -104,6 +104,16 @@ const char* String::strstr(const char *s1, const char *s2, uint32_t s1Len){
     return nullptr;
 }
 
+const char* String::strchr(const char *s, char c){
+	if(!s)	return nullptr;
+
+	while(*s != '\0'){
+		if(*s == c)	return s;
+		s++;
+	}
+	return ((c == '\0') ? s : nullptr);
+}
+
 void String::uint_to_str(uint32_t val, char *str){
 	char aux[11];			//	Max number: 2^32 - 1
 	uint8_t i = 0, j = 0;
@@ -173,6 +183,26 @@ int String::floatVec2str(float *data, uint8_t dataSize, char *buffer, char delim
 	return len;
 }
 
+const char* String::str_to_uint(const char *str, uint32_t &value, uint8_t maxDigits){
+	if(!str) return nullptr;
+	if(maxDigits > 10) maxDigits = 10;	//	Max Digits of an uint32_t
+
+	uint32_t res = 0;
+	uint8_t digits = 0;
+
+	while((*str >= '0') && (*str <= '9')){
+		if(digits >= maxDigits) return nullptr;	//	Too Many Digits
+		res = ((res * 10) + (*str - '0'));
+		digits++;
+		str++;
+	}
+
+	if(digits == 0) return nullptr;	//	No Number in Str
+
+	value = res;
+	return str;
+}
+
 void String::append(const char *str){
 	if(!str){
 		m_error = error_type::NULL_STR;
@@ -205,6 +235,93 @@ void String::append(char *str){
 	String::strcpy(m_str + m_index, str);	//	Adds str to existing m_str
 	m_index += len;
 	m_error = error_type::OK;
+}
+
+void String::append(const char *str, uint16_t len){
+	if(!str){
+		m_error = error_type::NULL_STR;
+		return;
+	}
+
+	if(m_index + len >= MAX_LEN){
+		m_error = error_type::BUFFER_OVERFLOW;
+		return;
+	}
+
+	for(uint16_t idx = 0; idx < len; idx++)
+		m_str[(m_index + idx)] = str[idx];
+
+	m_index += len;
+	m_str[m_index] = '\0';
+	m_error = error_type::OK;
+}
+
+const char* String::skipPrefix(const char *s, const char *prefix){
+	if(!s || !prefix) return nullptr;
+
+	while(*prefix != '\0'){
+		if(*s != *prefix) return nullptr;
+		s++;
+		prefix++;
+	}
+
+	return s;
+}
+
+const char* String::findAfter(const char *s, const char *subStr){
+	if(!s || !subStr) return nullptr;
+
+	const char *p = String::strstr(s, subStr);
+	if(!p) return nullptr;
+
+	return p + String::strlen(subStr);
+}
+
+bool String::findBetween(const char *s, const char *startSubStr, const char *endSubStr, const char *&begin, uint16_t &len){
+	if(!endSubStr) return false;
+
+	const char *start = String::findAfter(s, startSubStr);
+	if(!start) return false;
+
+	const char *end = String::strstr(start, endSubStr);
+	if(!end) return false;
+
+	begin = start;
+	len = (uint16_t)(end - start);
+	return true;
+}
+
+int String::matchPrefix(const char *s, const char *const *options, uint8_t count, const char **end){
+	if(!s || !options) return -1;
+
+	for(uint8_t i = 0; i < count; i++){
+		const char *after = String::skipPrefix(s, options[i]);
+		if(after){
+			if(end) *end = after;
+			return i;
+		}
+	}
+	return -1;
+}
+
+bool String::assign(const char *str, uint16_t len){
+	if(!str){
+		m_error = error_type::NULL_STR;
+		return false;
+	}
+
+	if(len >= MAX_LEN){
+		m_error = error_type::BUFFER_OVERFLOW;
+		return false;
+	}
+
+	for(uint16_t i = 0; i < len; i++){
+		m_str[i] = str[i];
+	}
+	m_str[len] = '\0';
+	m_index = len;
+	m_error = error_type::OK;
+	return true;
 }
 
 String& String::operator=(const char *str){
@@ -327,6 +444,8 @@ const char* String::getStr() const{
 }
 
 uint16_t String::getLen() const{ return m_index; }
+
+uint16_t String::getCapacity() const{ return (MAX_LEN - 1); }
 
 uint8_t String::getError() const{ return m_error; }
 

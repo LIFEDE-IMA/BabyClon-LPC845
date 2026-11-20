@@ -17,6 +17,9 @@ class Statistics{
 	public:
 		Statistics();
 
+		static uint32_t mean(void *vec, uint8_t size);		//	Returns Mean of uintX_t Vector
+
+		static uint32_t median(uint32_t *vec, uint8_t size);	//	Returns Median of uint32_t Vector
 		static float median(const float *vec, uint8_t size);	//	Returns the median of a float vector
 
 		~Statistics();

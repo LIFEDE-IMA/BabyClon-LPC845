@@ -203,14 +203,14 @@ class SCTimer{
 		uint8_t m_sctOutputPin;
 
 		//	ISR
-		void (*m_usrHandler)(void);
+		void (*m_isrHandler)(void);
 
 		void inputConfig(void);		//	Configures SCT Input INMUX and SWM
 		void outputConfig(void);	//	Configures SCT Output SWM
 		void setOutputADC(outputType_t outputADC);	//	Configures SCT Output PIO when ADC Trigger Output Type is asked
 
 	public:
-		SCTimer(sctOpMode_t opMode = sctOpMode_t::sctUNIFIED_MODE, void (*usrHandler)(void) = nullptr, bool setInputTrigger = false, bool setOutputTrigger = false);	//	Constructor
+		SCTimer(sctOpMode_t opMode = sctOpMode_t::sctUNIFIED_MODE, void (*isrHandler)(void) = nullptr, bool setInputTrigger = false, bool setOutputTrigger = false);	//	Constructor
 
 		void configCLK(sctClkMode_t ClkMode, sctClkSel_t clkSel);		//	Configures CFG: CLKMODE y CKSEL
 		void configPrescaler(uint8_t clkDiv_L, uint8_t clkDiv_H = 0);	//	Configures the factor by which the clk is divided (PRE + 1)
@@ -239,6 +239,12 @@ class SCTimer{
 		void disableEventInterrupt(sctEvent_t event) const;			//	Disables Event Interrupt 0-7
 		void enableConflictInterrupt(outputNumber_t output) const;	//	Enables Conflict Interrupt for Output [output]
 		void disableConflictInterrupt(outputNumber_t output) const;	//	Disables Conflict Interrupt for Output [output]
+
+		void enableDmaRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request, sctEvent_t event) const;	//	Event [event] Raises SCT DMA Request [request] (SCT_DMA0 / SCT_DMA1)
+		void disableDmaRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request, sctEvent_t event) const;	//	Event [event] No Longer Raises SCT DMA Request [request] (SCT_DMA0 / SCT_DMA1)
+		void enableDmaReloadRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const;				//	DMA Request [request] When Match Registers are Loaded from Reload Registers
+		void disableDmaReloadRequest(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const;				//	DMA Request [request] Is No Longer Fired when Match Registers are Loaded from Reload Registers
+		bool isDmaRequestPending(InMux::DMA_TRIGGER_INPUT_SOURCE_t request) const;					//	Returns DMAREQx->DRQx
 
 		void setReload(sctRegisterNumber_t reg, uint32_t reloadValue) const;							//	Sets reload value for reg 0-7 in unify mode
 		void setReload(sctCounter_t counter, sctRegisterNumber_t reg, uint16_t reloadValue) const;		//	Sets reload value for reg 0-7 in low counter or high counter

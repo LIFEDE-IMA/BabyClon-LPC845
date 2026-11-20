@@ -21,6 +21,7 @@ class String{
 
 		void append(const char *str);				//	Concatenation
 		void append(char *str);						//	Concatenation
+		void append(const char *str, uint16_t len);	//	Concatenation of Sub String
 
 	public:
 		enum error_type{
@@ -38,10 +39,20 @@ class String{
 		static int strcmp(const char *s1, const char *s2);			//	Compares s1 with s2
 		static const char* strstr(const char *s1, const char *s2);	//  Searches s2 in s1
 		static const char* strstr(const char *s1, const char *s2, uint32_t s1Len);	//	Searches s2 in s1
+		static const char* strchr(const char *s, char c);			//	Searches c in s and Returns Pointer to its Position
 
 		static void uint_to_str(uint32_t val, char *str);											//	Converts uint_t to string
 		static int float2str(float data, char *buffer, int initPos = 0);							//	Converts float to string
 		static int floatVec2str(float *data, uint8_t dataSize, char *buffer, char delimiter = '$');	//	Converts float vector to string
+
+		static const char* str_to_uint(const char *str, uint32_t &value, uint8_t maxDigits = 10);	//	Reads a Number, Returns Pointer After its Last Digit (nullptr if None / Too Many Digits)
+
+		static const char* skipPrefix(const char *s, const char *prefix);	//	If s Starts with Prefix: Pointer Right After it, Else nullptr
+		static const char* findAfter(const char *s, const char *subStr);	//	Pointer Right After the First subStr Found in s, Else nullptr
+		static bool findBetween(const char *s, const char *startSubStr, const char *endSubStr, const char *&begin, uint16_t &len);	//	True if Theres Sth Between startSubStr and endSubStr, begin Points to That
+		static int matchPrefix(const char *s, const char *const *options, uint8_t count, const char **end = nullptr);				//	Index of the Option s starts with, -1 if none
+
+		bool assign(const char *str, uint16_t len);					//	Replaces the Content With the First len Chars of str
 
 		String& operator=(const char *str);							//	Assignment (Deleting Any Previous Data)
 		String& operator=(char *str);								//	Assignment (Deleting Any Previous Data)
@@ -59,6 +70,7 @@ class String{
 
 		const char* getStr() const;									//	Gets the string
 		uint16_t getLen() const;									//	Gets m_str length
+		uint16_t getCapacity() const;								//	Max Chars it Can Hold
 		uint8_t getError() const;									//	Asks if an operation was succesfull
 		void clear();												//	Deletes the string
 

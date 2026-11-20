@@ -10,6 +10,7 @@
 #define PINT_H_
 
 #include "LPC845.h"
+#include "inmux.h"
 
 #if defined (__cplusplus)
 extern "C" {
@@ -26,11 +27,11 @@ void PININT7_IRQHandler(void);
 }
 #endif
 
-#define TOTAL_PINT_SOURCES 8
-
 class Pint{
 	public:
-		enum pintSource_t{
+		static const uint8_t TOTAL_PINT_SOURCES = 8;
+
+		enum pintSource_t : uint8_t{
 			PINTSEL0 = 0,
 			PINTSEL1,
 			PINTSEL2,
@@ -45,7 +46,7 @@ class Pint{
 		enum triggerType_t{ T_FALLINGEDGE = 0, T_RISINGEDGE, T_BOTHEDGES, T_LOWLVL, T_HIGHLVL, T_NONE };
 
 	private:
-		uint8_t m_pintSource;
+		pintSource_t m_pintSource;
 		static uint8_t m_usedSources;
 
 		bool m_port;
@@ -54,10 +55,14 @@ class Pint{
 
 		void (*m_handler)(void);
 
-	public:
-		Pint(bool port, uint8_t pin, triggerType_t trigger, void (*handler)(void));		//	Constructor
-
 		void configIntExt();	//	Configures external interrupts
+
+	public:
+		Pint(bool port, uint8_t pin, triggerType_t trigger, void (*handler)(void), pintSource_t pintSource = pintSource_t::ANY);		//	Constructor
+
+		pintSource_t getSource(void) const;	//	Returns source for current pin interrupt [0 : 7]
+
+		bool getDmaTrigger(InMux::DMA_TRIGGER_INPUT_SOURCE_t &trigger) const;	//	Returns True and Modifies [trigger] if Current Source Has Valid DMA TRIGGER INPUT (PININT4 to PININT7)
 
 		friend void PININT0_IRQHandler(void);	//	ISR Handler for PININT0
 		friend void PININT1_IRQHandler(void);	//	ISR Handler for PININT1

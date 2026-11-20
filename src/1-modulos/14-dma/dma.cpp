@@ -299,6 +299,12 @@ void DMA_IRQHandler(void){
 
 Dma::~Dma(){}
 
+
+
+
+/*		------------------ DMA TESTING CLASSES ------------------
+
+
 namespace{
 	//	Static, Not Members -> The Alignment of the Descriptors Does Not Depend on Where a DmaTest Object is Placed
 	const uint32_t TIMEOUT_LOOPS = 200000;
@@ -641,7 +647,7 @@ void DmaChainTest::stateMachine(void){
 }
 
 DmaChainTest::~DmaChainTest(){}
-
+*/
 /*
  * 									DMA TEST 2
  *
@@ -712,7 +718,7 @@ DmaChainTest::~DmaChainTest(){}
  *
  *      Any test       99  		   timeout
  */
-
+/*
 namespace{
 	const uint16_t BIG = 1024;
 
@@ -1376,7 +1382,7 @@ void DmaTest2::stateMachine(void){
 }
 
 DmaTest2::~DmaTest2(){}
-
+*/
 /*
  * 									DMA IRQ TEST
  *
@@ -1431,7 +1437,7 @@ DmaTest2::~DmaTest2(){}
  *
  *      Any Test 		99 timeout
  */
-
+/*
 namespace{
 	const uint16_t SETTLE_LOOPS = 200;		//	Passes after the ISR ran: an extra (spurious) ISR entry would show up here
 	const uint16_t MANY = 200;
@@ -1537,9 +1543,9 @@ void DmaIrqTest::stateMachine(void){
 		case state_t::S_IDLE:
 		case state_t::S_FINISHED:
 			break;
-
+*/
 		/* ======================================= T_SINGLE ======================================= */
-		case state_t::S_SINGLE_START:
+/*		case state_t::S_SINGLE_START:
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_src[idx] = (0x1A000000u + idx);
 				s_dstA[idx] = 0;
@@ -1576,8 +1582,8 @@ void DmaIrqTest::stateMachine(void){
 				DmaIrqTest::timeoutRecover(testBit_t::T_SINGLE, state_t::S_BOTH_START);
 			break;
 
-		/* ======================================= T_BOTH ======================================= */
-		case state_t::S_BOTH_START:
+*/		/* ======================================= T_BOTH ======================================= */
+/*		case state_t::S_BOTH_START:
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_src[idx] = (0x2B000000u + idx);
 				s_dstA[idx] = 0;
@@ -1615,8 +1621,8 @@ void DmaIrqTest::stateMachine(void){
 				DmaIrqTest::timeoutRecover(testBit_t::T_BOTH, state_t::S_LATE_START);
 			break;
 
-		/* ======================================= T_LATE ======================================= */
-		case state_t::S_LATE_START:{
+*/		/* ======================================= T_LATE ======================================= */
+/*		case state_t::S_LATE_START:{
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_ppSrc[idx] = (0x3C000000u + idx);
 				s_ppA[idx] = 0;
@@ -1695,8 +1701,8 @@ void DmaIrqTest::stateMachine(void){
 			}
 			break;
 
-		/* ======================================= T_MANY ======================================= */
-		case state_t::S_MANY_START:
+*/		/* ======================================= T_MANY ======================================= */
+/*		case state_t::S_MANY_START:
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_src[idx] = (0x4D000000u + ((uint32_t)m_iter << 8) + idx);
 				s_dstA[idx] = 0;
@@ -1733,8 +1739,8 @@ void DmaIrqTest::stateMachine(void){
 			}
 			break;
 
-		/* ======================================= T_NOINT ======================================= */
-		case state_t::S_NOINT_START:
+*/		/* ======================================= T_NOINT ======================================= */
+/*		case state_t::S_NOINT_START:
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_src[idx] = (0x5E000000u + idx);
 				s_dstA[idx] = 0;
@@ -1769,8 +1775,8 @@ void DmaIrqTest::stateMachine(void){
 			}
 			break;
 
-		/* ======================================= T_TWOCH ======================================= */
-		case state_t::S_TWOCH_START:
+*/		/* ======================================= T_TWOCH ======================================= */
+/*		case state_t::S_TWOCH_START:
 			for(uint8_t idx = 0; idx < 8; idx++){
 				s_src[idx] = (0x6F000000u + idx);
 				s_dstA[idx] = 0;
@@ -1809,8 +1815,8 @@ void DmaIrqTest::stateMachine(void){
 			}
 			break;
 
-		/* ======================================= Timeout recovery ======================================= */
-		case state_t::S_RECOVER:{
+*/		/* ======================================= Timeout recovery ======================================= */
+/*		case state_t::S_RECOVER:{
 			bool a = m_dmaA.stopDone();
 			bool b = m_dmaB.stopDone();
 			if((a && b) || (++m_loops > TIMEOUT_LOOPS)){
@@ -1823,6 +1829,389 @@ void DmaIrqTest::stateMachine(void){
 
 		default:
 			m_state = state_t::S_FINISHED;
+			break;
+	}
+}
+*/
+
+
+
+//		------------------------	HARDWARE TRIGGER TEST	----------------------
+
+/*
+*  Hardware trigger test: SCTimer event -> DMA request 0 -> DMA
+*
+*  Check ids (getFirstFailId()):
+*      11 DMA channel could not be armed
+*      12 no event arrived (SCT not running)
+*      13 after the 1st event: words written != 1 (0 = trigger never arrived, > 1 = one trigger moved several items)
+*      14 2nd event already happened when the 1st one was checked (main loop too slow, result not reliable)
+*      21 the transfer never completed
+*      22 events at completion != 16 (or 17)
+*      23 error flag
+*      31 some word was never written
+*      32 some word was captured too late after its event (> 100 us)
+*/
+
+namespace{
+	const uint32_t TIMEOUT_LOOPS = 20000000;	//	Main loop passes: only to never hang if the SCT does not run
+	const uint16_t SETTLE_LOOPS = 200;			//	Passes after an event, much shorter than the 50 ms event period
+	const uint32_t PERIOD_MS = 50;
+	const uint32_t MAX_LATENCY_TICKS = 3000;	//	100 us at 30 MHz
+	const uint32_t SENTINEL = 0xFFFFFFFFu;
+
+	uint32_t s_dst[DmaSctTest::WORDS];
+	volatile uint32_t s_events = 0;
+}
+
+void DmaSctTest::onSctEvent(void){
+	s_events++;
+	SCT->EVFLAG = (1 << 0);		//	Clears event 0 flag
+}
+
+DmaSctTest::DmaSctTest(uint8_t channel, Dma::trigPolarity_t polarity, Dma::trigType_t type) :
+		m_sct(SCTimer::sctUNIFIED_MODE, &DmaSctTest::onSctEvent), m_dma(channel), m_polarity(polarity), m_type(type){
+	m_state = state_t::S_IDLE;
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_wordsAtFirst = 0xFF;
+	m_eventsAtDone = 0;
+	m_maxLatency = 0;
+	m_loops = 0;
+	m_settle = 0;
+	m_okAccFlag = true;
+}
+
+bool DmaSctTest::hasFinished(void) const{ return (m_state == state_t::S_FINISHED); }
+
+bool DmaSctTest::allPassed(void) const{ return ((m_state == state_t::S_FINISHED) && (m_pass == testBit_t::T_ALL) && (m_fail == 0)); }
+
+uint8_t DmaSctTest::getPassMask(void) const{ return m_pass; }
+
+uint8_t DmaSctTest::getFailMask(void) const{ return m_fail; }
+
+uint8_t DmaSctTest::getFirstFailId(void) const{ return m_firstFailId; }
+
+uint8_t DmaSctTest::getWordsAtFirstEvent(void) const{ return m_wordsAtFirst; }
+
+uint8_t DmaSctTest::getDrqAtFirstEvent(void) const{ return m_drqAtFirst; }
+
+uint32_t DmaSctTest::getEventsAtDone(void) const{ return m_eventsAtDone; }
+
+uint32_t DmaSctTest::getMaxLatencyTicks(void) const{ return m_maxLatency; }
+
+void DmaSctTest::report(testBit_t bit, bool ok){
+	if(ok)	m_pass |= bit;
+	else	m_fail |= bit;
+}
+
+void DmaSctTest::check(uint8_t id, bool cond){
+	if(!cond){
+		m_okAccFlag = false;
+		if(m_firstFailId == 0)	m_firstFailId = id;
+	}
+}
+
+uint8_t DmaSctTest::wordsWritten(void) const{
+	uint8_t n = 0;
+	for(uint8_t idx = 0; idx < WORDS; idx++)
+		if(s_dst[idx] != SENTINEL)	n++;
+	return n;
+}
+
+void DmaSctTest::shutdown(void){
+	m_sct.haltCounter(SCTimer::UNIFIED_COUNTER);
+	m_sct.disableDmaRequest(InMux::SCT_DMA0, SCTimer::sctEVENT_0);
+	m_sct.disableEventInterrupt(SCTimer::sctEVENT_0);
+	m_sct.disableNVICint();
+	m_dma.requestStop();
+}
+
+void DmaSctTest::init(void){
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_wordsAtFirst = 0xFF;
+	m_drqAtFirst = 0xFF;
+	m_okAccFlag = true;
+	m_loops = 0;
+	s_events = 0;
+
+	for(uint8_t i = 0; i < WORDS; i++)	s_dst[i] = SENTINEL;
+
+	//	SCT: unified 32 bit counter, event 0 = match 0 (50 ms), the event is also the counter limit (periodic)
+	m_sct.init();
+	m_sct.setTimer(SCTimer::UNIFIED_COUNTER, SCTimer::sctREGISTER_0, PERIOD_MS, SCTimer::T_MILI);
+	m_sct.configEvent(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0, SCTimer::sctREGISTER_0,
+					  SCTimer::EQUAL, SCTimer::DIR_INDEPENDENT);
+	m_sct.enableStateEvent(SCTimer::sctEVENT_0, SCTimer::sctEVENT_STATE_0);
+	m_sct.setLimit(SCTimer::UNIFIED_COUNTER, SCTimer::sctEVENT_0);
+	m_sct.enableEventInterrupt(SCTimer::sctEVENT_0);	//	Only to COUNT the events
+	m_sct.enableNVICint();
+	m_sct.enableDmaRequest(InMux::SCT_DMA0, SCTimer::sctEVENT_0);		//	Event 0 -> SCT DMA request 0
+
+	m_dma.setBurstMode(0);	// TRIGBURST = 1, burst of 1: one trigger = one transfer
+
+	//	DMA: armed and waiting. One trigger = one 32 bit transfer (no burst): COUNT (fixed source) -> s_dst[i]
+	bool ok = (m_dma.setHardwareTrigger(InMux::SCT_DMA0, m_polarity, m_type)
+		   && m_dma.setTransfer((const void*)&SCT->COUNT.COUNTU, s_dst, WORDS, Dma::WIDTH_32BIT, Dma::INC_NONE, Dma::INC_1)
+		   && m_dma.startTransfer());
+
+	if(ok){
+		m_sct.startCounter(SCTimer::UNIFIED_COUNTER);
+		m_state = S_WAIT_FIRST;
+	}else{
+		DmaSctTest::check(11, false);
+		DmaSctTest::report(T_FIRST, false);
+		DmaSctTest::report(T_COMPLETE, false);
+		DmaSctTest::report(T_LATENCY, false);
+		DmaSctTest::shutdown();
+		m_state = S_FINISHED;
+	}
+}
+
+
+void DmaSctTest::stateMachine(void){
+	switch(m_state){
+
+		case S_IDLE:
+		case S_FINISHED:
+			break;
+
+		case S_WAIT_FIRST:
+			if(s_events >= 1){
+				m_settle = 0;
+				m_state = S_SETTLE_FIRST;
+			}else if(++m_loops > TIMEOUT_LOOPS){
+				DmaSctTest::check(12, false);
+				DmaSctTest::report(T_FIRST, false);
+				DmaSctTest::report(T_COMPLETE, false);
+				DmaSctTest::report(T_LATENCY, false);
+				DmaSctTest::shutdown();
+				m_state = S_FINISHED;
+			}
+			break;
+
+		case S_SETTLE_FIRST:
+			if(++m_settle >= SETTLE_LOOPS){
+				m_wordsAtFirst = wordsWritten();
+				m_drqAtFirst = (m_sct.isDmaRequestPending(InMux::SCT_DMA0) ? 1 : 0);
+				DmaSctTest::check(14, (s_events == 1));
+				DmaSctTest::check(13, (m_wordsAtFirst == 1));
+				DmaSctTest::report(T_FIRST, m_okAccFlag);
+
+				m_okAccFlag = true;
+				m_loops = 0;
+				m_state = S_WAIT_DONE;
+			}
+			break;
+
+		case S_WAIT_DONE:
+			if(m_dma.aIsDone()){
+				m_settle = 0;
+				m_state = S_SETTLE_DONE;
+			}else if((s_events > 40) || (++m_loops > TIMEOUT_LOOPS)){
+				DmaSctTest::check(21, false);
+				DmaSctTest::report(T_COMPLETE, false);
+				DmaSctTest::report(T_LATENCY, false);
+				DmaSctTest::shutdown();
+				m_state = S_FINISHED;
+			}
+			break;
+
+		case S_SETTLE_DONE:
+			if(++m_settle >= SETTLE_LOOPS){	//	Lets the ISR of the last event run before counting events
+				m_eventsAtDone = s_events;
+				DmaSctTest::check(22, ((m_eventsAtDone == WORDS) || (m_eventsAtDone == (WORDS + 1))));
+				DmaSctTest::check(23, !m_dma.hasError());
+				DmaSctTest::report(T_COMPLETE, m_okAccFlag);
+
+				m_okAccFlag = true;
+				uint32_t maxLat = 0;
+				for(uint8_t idx = 0; idx < WORDS; idx++){
+					if(s_dst[idx] == SENTINEL)	DmaSctTest::check(31, false);
+					else if(s_dst[idx] > maxLat)	maxLat = s_dst[idx];
+				}
+				m_maxLatency = maxLat;
+				DmaSctTest::check(32, (maxLat <= MAX_LATENCY_TICKS));
+				DmaSctTest::report(T_LATENCY, m_okAccFlag);
+
+				m_dma.clearFlags();
+				DmaSctTest::shutdown();
+				m_state = S_FINISHED;
+			}
+			break;
+
+		default:
+			m_state = S_FINISHED;
+			break;
+	}
+}
+
+DmaSctTest::~DmaSctTest(){}
+
+//		------------------------	PIN INT TEST	-------------------------------
+
+/*
+ *  Check ids (getFirstFailId()):
+ *      10 	source is not PINTSEL4..7 (no DMA trigger exists for it) or it was already taken
+ *      11 	DMA channel could not be armed
+ *      21 	Pint events < 16 when the transfer completed (one trigger moved several items?)
+ *      22 	a word was never written
+ *      23 	error flag
+ *      31 	channel did not stop
+ */
+
+namespace{
+	const uint16_t P_SETTLE_LOOPS = 300;
+	const uint32_t SENTINEL2 = 0x5A5A5A5Au;		//	A GPIO PIN register value cannot realistically be this
+
+	uint32_t s_pintDst[DmaSctTest::WORDS];
+	volatile uint32_t s_pintEvents = 0;
+}
+
+void DmaPintTest::onPintEvent(void){
+	s_pintEvents++;
+}
+
+DmaPintTest::DmaPintTest(bool port, uint8_t pin, Pint::pintSource_t source, uint8_t channel, Dma::trigPolarity_t polarity, Dma::trigType_t type) :
+	m_pint(port, pin, Pint::T_FALLINGEDGE, &DmaPintTest::onPintEvent, source),
+	m_dma(channel), m_polarity(polarity), m_type(type), m_port(port), m_pin(pin){
+
+	m_sourceOk = ((source >= Pint::PINTSEL4) && (source <= Pint::PINTSEL7));
+	m_trigger = (m_sourceOk ? (InMux::DMA_TRIGGER_INPUT_SOURCE_t)(InMux::PININT4 + (source - Pint::PINTSEL4)) : InMux::PININT4);
+
+	m_state = S_IDLE;
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_eventsAtDone = 0;
+	m_lowWords = 0;
+	m_loops = 0;
+	m_settle = 0;
+	m_okAcc = true;
+}
+
+bool DmaPintTest::hasFinished(void) const{ return (m_state == S_FINISHED); }
+
+bool DmaPintTest::allPassed(void) const{ return ((m_state == S_FINISHED) && (m_pass == T_ALL) && (m_fail == 0)); }
+
+uint8_t DmaPintTest::getPassMask(void) const{ return m_pass; }
+
+uint8_t DmaPintTest::getFailMask(void) const{ return m_fail; }
+
+uint8_t DmaPintTest::getFirstFailId(void) const{ return m_firstFailId; }
+
+uint32_t DmaPintTest::getEvents(void) const{ return s_pintEvents; }
+
+uint32_t DmaPintTest::getEventsAtDone(void) const{ return m_eventsAtDone; }
+
+uint8_t DmaPintTest::getLowWords(void) const{ return m_lowWords; }
+
+
+uint8_t DmaPintTest::getWordsWritten(void) const{
+	uint8_t n = 0;
+	for(uint8_t i = 0; i < WORDS; i++)
+		if(s_pintDst[i] != SENTINEL2)	n++;
+	return n;
+}
+
+void DmaPintTest::report(testBit_t bit, bool ok){
+	if(ok)	m_pass |= bit;
+	else	m_fail |= bit;
+}
+
+void DmaPintTest::check(uint8_t id, bool cond){
+	if(!cond){
+		m_okAcc = false;
+		if(m_firstFailId == 0)	m_firstFailId = id;
+	}
+}
+
+void DmaPintTest::init(void){
+	m_pass = 0;
+	m_fail = 0;
+	m_firstFailId = 0;
+	m_okAcc = true;
+	s_pintEvents = 0;
+
+	for(uint8_t i = 0; i < WORDS; i++)	s_pintDst[i] = SENTINEL2;
+
+	if(!m_sourceOk){	//	Not PINTSEL4..7, or the source was already taken by another Pint
+		check(10, false);
+		report(T_ISR, false);
+		report(T_DMA, false);
+		m_state = S_FINISHED;
+		return;
+	}
+
+	m_dma.setBurstMode(0);	// TRIGBURST = 1, burst of 1: one trigger = one transfer
+
+	//	DMA: armed and waiting. One trigger = one 32 bit transfer: GPIO PIN register (fixed source) -> s_dst[i]
+	bool ok = (m_dma.setHardwareTrigger(m_trigger, m_polarity, m_type)
+		   && m_dma.setTransfer((const void*)&GPIO->PIN[m_port ? 1 : 0], s_pintDst, WORDS, Dma::WIDTH_32BIT, Dma::INC_NONE, Dma::INC_1)
+		   && m_dma.startTransfer());
+
+	if(ok){
+		m_state = S_WAIT_PRESSES;
+	}else{
+		check(11, false);
+		report(T_ISR, false);
+		report(T_DMA, false);
+		m_state = S_FINISHED;
+	}
+}
+
+void DmaPintTest::stateMachine(void){
+	switch(m_state){
+
+		case S_IDLE:
+		case S_FINISHED:
+			break;
+
+		case S_WAIT_PRESSES:		//	No timeout: it waits for you (watch getEvents() / getWordsWritten() while you press)
+			if(m_dma.aIsDone()){
+				m_eventsAtDone = s_pintEvents;
+				m_settle = 0;
+				m_state = S_SETTLE;
+			}
+			break;
+
+		case S_SETTLE:
+			if(++m_settle >= SETTLE_LOOPS){
+				check(21, (m_eventsAtDone >= WORDS));
+				report(T_ISR, m_okAcc);
+
+				m_okAcc = true;
+				uint8_t low = 0;
+				for(uint8_t i = 0; i < WORDS; i++){
+					if(s_pintDst[i] == SENTINEL2)	check(22, false);
+					else if(!((s_pintDst[i] >> m_pin) & 0x1))	low++;
+				}
+				m_lowWords = low;
+				check(23, !m_dma.hasError());
+				report(T_DMA, m_okAcc);
+
+				m_dma.clearFlags();
+				m_dma.requestStop();
+				m_loops = 0;
+				m_state = S_STOPPING;
+			}
+			break;
+
+		case S_STOPPING:
+			if(m_dma.stopDone()){
+				m_state = S_FINISHED;
+			}else if(++m_loops > TIMEOUT_LOOPS){
+				if(m_firstFailId == 0)	m_firstFailId = 31;
+				report(T_DMA, false);
+				m_state = S_FINISHED;
+			}
+			break;
+
+		default:
+			m_state = S_FINISHED;
 			break;
 	}
 }

@@ -1,377 +1,310 @@
 /*
- * adc.cpp
+ * my_adc.cpp
  *
- *  Created on: 6 jun. 2026
- *      Author: Julián - LIFEDE - UTN FRBA
- *      Consultas: jgross@frba.utn.edu.ar
+ *  Created on: 23 oct. 2026
+ *      Author: Mati3 - LIFEDE - UTN FRBA
+ *      Consultas: mmelian@frba.utn.edu.ar
  */
 
 #include "adc.h"
+/*
 
-/* Definicion de clocks */
-#define CLOCK_SWM				7
-#define CLOCK_ADC				24
-#define CLOCK_DAC1				1
+Adc *adcInstance[Adc::TOTAL_ADC_CHANNELS] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
-/* Definicion de Pines */
-#define CANAL_0_ADC				14
-#define PIN_DAC_1				27
+uint32_t Adc::s_seqBase[2] = {0, 0};
+bool Adc::s_seqConfigured[2] = {false, false};
+uint16_t Adc::s_seqMask[2] = {0, 0};
+uint8_t Adc::s_adcChannelsNeeded = 0;
 
-/* Definicion de Power */
-#define POWER_ADC				4
-#define POWER_DAC1				14
+//	All Port 0
+static const uint8_t adcPin[Adc::TOTAL_ADC_CHANNELS] = {7, 6, 14, 23, 22, 21, 20, 19, 18, 17, 13, 4};
 
-/* Definicion bits ADC */
-#define CALMODE					30
-#define CANAL_0					0
-#define BURST					27
-#define	SEQ_A_ENABLE			31
+//	NVIC (Cap. 7), SYSCON (Cap. 8), SWM (Cap. 10), IOCON (Cap. 11), GPIO (Cap. 12), DMA (Cap. 16), ADC (Cap. 27)
+Adc::Adc(adcChannel_t adcChannel, uint32_t freqHz, adcTrigSrc_t trigSrc, adcTrigPol_t trigPol, bool burst, bool singleStep, adcSeq_t adcSeq, adcAsyncMode_t asyncMode, adcPwrMode_t pwrMode, bool enableBypassSync, bool lowPriority, adcRetrievingConversionMethod_t modeBit){
+	m_adcChannel = adcChannel;
+	m_freqHz = freqHz;
+	m_adcSequence = adcSeq;
+	m_adcTrigSrc = trigSrc;
+	m_adcTrigPol = trigPol;
+	m_burstFlag = burst;
+	m_singleStepFlag = singleStep;
+	m_adcAsyncMode = asyncMode;
+	m_adcPwrMode = pwrMode;
+	m_adcBypassSyncFlag = enableBypassSync;
+	m_adcLowPriorityFlag = lowPriority;
+	m_adcMode = modeBit;
 
-#define	INT_SEQ_A				0
+	m_adcInitFinishedFlag = false;
+	m_adcStartedFlag = false;
 
-#define	FLAG_INTERRUPT_SEQ_A	28
+	m_adcLastSample = 0;
+	m_adcSamplesBuffIndex = 0;
+	m_adcValidSamplesCounter = 0;
+	m_adcNewSampleFlag = false;
+	for(uint8_t idx = 0; idx < Adc::TOTAL_ADC_SAMPLES; idx++)	m_adcSamplesBuff[idx] = 0;
 
-/* Definicion bits DAC */
-#define ADC1_BIAS				16
+	m_adcLastRange = 0;
+	m_adcLastCross = 0;
+	m_adcThFlag = false;
+	m_adcThRange = 0;
+	m_adcThCross = 0;
+	m_adcThCount = 0;
 
-extern uint32_t cuentasADC;
-
-static uint32_t g_result[16][TAMANIO_BUFFER_ADC] ;
-struct canal
-{
-	uint16_t Indice;
-	bool enable;
-};
-
-struct canal CanalesHabilitados[] =
-{
-		{ 0 , false },	//canal 0  :port0,   7
-		{ 0 , true },	//canal 1  :port0,   6
-		{ 0 , false },	//canal 2  :port0,  14
-		{ 0 , false },	//canal 3  :port0,  23
-		{ 0 , false },	//canal 4  :port0,  22
-		{ 0 , false },	//canal 5  :port0,  21
-		{ 0 , false },	//canal 6  :port0,  20
-		{ 0 , false },	//canal 7  :port0,  19
-		{ 0 , false },	//canal 8  :port0,  18
-		{ 0 , false },	//canal 9  :port0,  17
-		{ 0 , false },	//canal 10 :port0,  13
-		{ 0 , false }	//canal 11 :port0,   4
-};
-
-Adc	*g_adc[ 4 ] = { nullptr , nullptr , nullptr ,nullptr };
-
-uint8_t Adc::m_inicializar = 0 ;
-
-uint32_t m_result_0;
-uint32_t m_result_1;
-uint32_t m_finished;
-
-Adc::Adc(uint8_t canal ,  resultado_t TipoDeFiltro )
-{
-	m_callback = nullptr;
-	m_Indice = 0;
-	m_NumeroCanal = canal ;
-	m_TipoDeFiltro = TipoDeFiltro ;
-	inicializar();
+	m_adcOvrFlag = false;
+	m_adcOvrCounter = 0;
 }
-Adc::Adc(uint8_t canal ,  int32_t (*callback)(int32_t) )
-{
-	m_callback = callback;
-	m_Indice = 0;
-	m_NumeroCanal = canal ;
-	m_TipoDeFiltro = CALLBACK ;
-	inicializar();
+
+bool Adc::init(bool launch){
+	if(m_adcInitFinishedFlag)	return true;
+	if(adcInstance[m_adcChannel] != nullptr)	return false;	//	Channel Taken
+
+	//	SEQx_CTRL Bits Shared by Every Channel in the Sequence
+	uint32_t base = ((m_adcTrigSrc << 12)			//	Selects HW Trigger Source
+				   | (m_adcTrigPol << 18)			//	Selects Input Trigger Polarity
+				   | (m_adcBypassSyncFlag << 19)	//	Check Table 454 from Usr Manual
+				   | (m_burstFlag << 27)			//	1: Continuously Cycled Through. Other SEQx Triggers Will be Ignored while this Bit is Set
+				   | (m_singleStepFlag << 28)		//	1: Single Conversion on the Next Channel in the Sequence Instead of the Default Response of Launching an Entire Sequence of Conversions. Once All Channels Comprising a Sequence Have Been Converted, a Subsequent Trigger Will Repeat the Sequence Beginning With the First Enabled Channel
+				   | (m_adcMode << 30));			//	0: SEQx Interrupt/DMA Flag Will Be Set at the End of Each Individual Conversion. This Flag Will Mirror DATAVALID Bit in SEQx_GDAT Register. OVERRUN Bit in SEQx_GDAT Register Will Contribute to Generation of an Overrun Interrupt if Enabled. - 1: SEQx Interrupt/DMA Flag Will Be Set When Entire Sequence Conversions Completes. This Flag Will Need to be Cleared by Software or DMA-clear Signal. OVERRUN Bit in SEQx_GDAT Register Will NOT Generate an Overrun Interrupt.
+
+	if(s_seqConfigured[m_adcSequence] && (s_seqBase[m_adcSequence] != base))	return false;	//	Previously Configured Different
+	if(s_adcChannelsNeeded && ((s_adcAsync != m_adcAsyncMode) || (s_adcPwr != m_adcPwrMode)))	return false;	//	Settings Differ
+
+	if(s_adcChannelsNeeded == 0){
+		s_adcAsync = m_adcAsyncMode;
+		s_adcPwr = m_adcPwrMode;
+	}
+
+	s_seqBase[m_adcSequence] = base;
+	s_seqConfigured[m_adcSequence] = true;
+
+	//	This Bit Is Only Managed in SEQA_CTRL (Handles Both SEQA and SEQB)
+	s_lowPriorityBit = ((m_adcSequence == adcSeq_t::SEQ_A) == m_adcLowPriorityFlag) ? (1 << 29) : 0;
+
+	adcInstance[m_adcChannel] = this;
+	s_adcChannelsNeeded++;
+
+	if(m_freqHz > Adc::MAX_ADC_FREQ)	m_freqHz = Adc::MAX_ADC_FREQ;
+
+	if(m_adcSequence == adcSeq_t::SEQ_B)	commitSeq(0);
+
+	//	Start HW
+	SYSCON->PDRUNCFG &= ~(1 << 4);						//	ADC_PD: Powered
+	SYSCON->SYSAHBCLKCTRL0 |= ((1 << 7) | (1 << 24));	//	Enable SWM and ADC Clk
+	SYSCON->ADCCLKSEL &= ~0x3;	//	ADC Clk Source: FRO
+	SYSCON->ADCCLKDIV &= ~0xFF;	//	ADC Clk Div: Disabled
+	SYSCON->ADCCLKDIV |= 0x1;	//	ADC Clk Div: 1
+
+	disableIoconPullResistors();	//	The MODE bits in the IOCON register should also disable both pull-up and pull-down resistors
+
+	SWM->PINENABLE0 &= ~(1 << (14 + m_adcChannel));	//	Enable ADCx
+
+	//	Calibration (should be in a single write to the ADC CTRL register)
+	uint8_t clkDiv = ((FREQ_CLOCK / 500000) - 1);			//	"The system clock is divided by this value plus one"
+	ADC->CTRL = ((clkDiv << 0) | (0 << 10) | (1 << 30));	//	CLKDIV Should Set Freq in 500kHz, LPWR = 0, CALMODE = 1
+	while((ADC->CTRL & (1 << 30)));		//	Polling (~290us), Waits Calibration to Finish
+
+	//	Each A/D Conversion Takes 25 ADC Clks
+	//	The ADC Clk is Shared Among All ADC Being Used (AT SAME TIME)
+	//	So: samplingFreq = (clkFreq / (25 * freqWanted * sourcesNeeded)) - 1
+	uint32_t samplingClk = (25 * m_freqHz * adcChannelsNeeded);
+	clkDiv = (FREQ_CLOCK / samplingClk);
+	clkDiv = clkDiv ? (clkDiv - 1) : clkDiv;	//	If clkFreq / samplingClk = 0, Do Not Subtract
+
+	ADC->CTRL = ((clkDiv << 0)		//	The system clock is divided by this value plus one
+			   | (asyncMode << 8)	//	0: ADC Clk Derived from mainClk Based on CLKDIV - 1: ADC Clk Based on an Alternative Independent Clk Source (15 MHz Max, Slower than 10 * APB Bus Clk Rate)
+			   | (pwrMode << 10)	//	LPWRMODE - 0: Disabled - 1: Enabled
+			   | (0 << 30));		//	CALMODE - 0: Disabled - 1: Enabled
+
+	//	SEQ_CTRL
+	//	"Remark: Set the BURST and SEQU_ENA bits at the same time"
+	ADC->SEQ_CTRL[m_adcSequence] &= ~(1 << 31);				//	SEQx Disabled (Safet To Modify SEQx_CTRL)
+
+		if(m_adcSequence == adcSeq_t::SEQ_A)
+			ADC->SEQ_CTRL[0] |= (1 << 29);	//	1: Any Enabled B Sequence Trigger Will Interrupt Sequence A and Launch Sequence B, the Interrupted A Sequence Will Resume After B Sequence Completes
+		else
+			ADC->SEQ_CTRL[0] &= ~(1 << 29);	//	0: Any B Trigger Which Occurs While an A Conversion Sequence is Active Will Be Ignored and Lost
+	}else{
+		if(m_adcSequence == adcSeq_t::SEQ_A)
+			ADC->SEQ_CTRL[0] &= ~(1 << 29);	//	0: Any B Trigger Which Occurs While an A Conversion Sequence is Active Will Be Ignored and Lost
+		else
+			ADC->SEQ_CTRL[0] |= (1 << 29);	//	1: Any Enabled B Sequence Trigger Will Interrupt Sequence A and Launch Sequence B, the Interrupted A Sequence Will Resume After B Sequence Completes
+	}
+
+
+	ADC->SEQ_CTRL[m_adcSequence] |= ((1 << m_adcChannel)		//	Selects Channel To Be Sampled
+								   | (trigSrc << 12)			//	Selects HW Trigger Source
+								   | (trigPol << 18)			//	Selects Input Trigger Polarity
+								   | (enableBypassSync << 19)	//	Check Table 454 from Usr Manual
+								   | (burst << 27)				//	1: Continuously Cycled Through. Other SEQx Triggers Will be Ignored while this Bit is Set
+								   | (singleStep << 28)			//	1: Single Conversion on the Next Channel in the Sequence Instead of the Default Response of Launching an Entire Sequence of Conversions. Once All Channels Comprising a Sequence Have Been Converted, a Subsequent Trigger Will Repeat the Sequence Beginning With the First Enabled Channel
+								   | (modeBit << 30)			//	0: SEQx Interrupt/DMA Flag Will Be Set at the End of Each Individual Conversion. This Flag Will Mirror DATAVALID Bit in SEQx_GDAT Register. OVERRUN Bit in SEQx_GDAT Register Will Contribute to Generation of an Overrun Interrupt if Enabled. - 1: SEQx Interrupt/DMA Flag Will Be Set When Entire Sequence Conversions Completes. This Flag Will Need to be Cleared by Software or DMA-clear Signal. OVERRUN Bit in SEQx_GDAT Register Will NOT Generate an Overrun Interrupt.
+								   | (1 << 31));				//	Enable Sequence [m_adcSequence]
+
+	ADC->TRM &= ~(1 << 5);	//	High Voltage Operating Range (VDD = 2.7V to 3.6V)
+
+	enableInt();		//	Enables SEQx Interrupt and Overrun Interrupt (NOT the Threshold Comparison Interrupt)
+	enableNVIC_int();	//	Idem for NVIC
+	//	For Enabling Threshold Comparison Interrupt, Set it in Main by Calling enableInt(true, enCmp != DISABLED)
 }
-void Adc::inicializar(void)
-{
 
-	if ( !m_inicializar )
-	{
-		m_inicializar = true;
-		// Primero habilitamos alimentacion del periferico
-		SYSCON->PDRUNCFG &= ~(1 << 4);
+void Adc::disableIoconPullResistors(void){
+	SYSCON->SYSAHBCLKCTRL0 |= (1 << 18);	//	Enable IOCON clk
 
-		// Habilitamos clock del periferico
-		SYSCON->SYSAHBCLKCTRL0 |= (0x1000000U);
+	switch(m_adcChannel){
+		case adcChannel_t::ADC_0:
+			IOCON->PIO[Gpio::iocon_index[0][7]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// 2-Setea divisor de ADC en 1
-		//	SYSCON->ADCCLKDIV |= (uint32_t)(0x01);
+		case adcChannel_t::ADC_1:
+			IOCON->PIO[Gpio::iocon_index[0][6]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		SYSCON->SYSAHBCLKCTRL0 |= (1 << 7) ;				//swm_power_on();
+		case adcChannel_t::ADC_2:
+			IOCON->PIO[Gpio::iocon_index[0][14]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		for ( uint8_t i = 0 ; i < (sizeof( CanalesHabilitados) / sizeof( struct canal) ); i++)
-		{
-			if ( CanalesHabilitados[i].enable )
-				SWM->PINENABLE0 &= ~(1 << (14 + i)); 	//registro activo bajo;
-		}
+		case adcChannel_t::ADC_3:
+			IOCON->PIO[Gpio::iocon_index[0][23]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		SYSCON->SYSAHBCLKCTRL0 &= ~(1 << 7);				//swm_power_off();
+		case adcChannel_t::ADC_4:
+			IOCON->PIO[Gpio::iocon_index[0][22]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		calibrateADC( );
+		case adcChannel_t::ADC_5:
+			IOCON->PIO[Gpio::iocon_index[0][21]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// Seleccionamos divisor del clock a nivel del periferico en 1
+		case adcChannel_t::ADC_6:
+			IOCON->PIO[Gpio::iocon_index[0][20]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// NOTA 1: Si bien se coloca cero en el divisor, recordar que la division es
-		// por ese valor +1
+		case adcChannel_t::ADC_7:
+			IOCON->PIO[Gpio::iocon_index[0][19]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// NOTA 2: Con el FRO a 12MHz, y ambos divisores (SYSCON y periferico) en 1, la
-		// frecuencia de conversion obtenida es de 12MHz / 25 = 480KHz. Con lo que una
-		// conversion tomara ~2.08usec
+		case adcChannel_t::ADC_8:
+			IOCON->PIO[Gpio::iocon_index[0][18]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// Modo Sincrónico de clock
-		ADC->CTRL &= ~(uint32_t)(0x100U);
+		case adcChannel_t::ADC_9:
+			IOCON->PIO[Gpio::iocon_index[0][17]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		set_clkdiv(12);
+		case adcChannel_t::ADC_10:
+			IOCON->PIO[Gpio::iocon_index[0][13]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// Modo Low Power off
-		ADC->CTRL &= ~(uint32_t)(0x400U);
+		case adcChannel_t::ADC_11:
+			IOCON->PIO[Gpio::iocon_index[0][4]] &= ~(0x3 << 3);	//	MODE: Inactive
+			break;
 
-		// Configuramos secuencia de conversion A para canal 0
-		for ( uint8_t i = 0 ; i < (sizeof( CanalesHabilitados) / sizeof( struct canal) ); i++)
-		{
-			if ( CanalesHabilitados[i].enable )
-				seqa_set_channels(i);
-		}
+		default:
+			break;
+	}
 
-		// Configuramos modo para que la interrupcion se efectue al finalizar toda la secuencia
-		//seqa_set_mode_end_of_sequence();
-		seqa_set_mode_end_of_conversion();
-		// Habilitamos secuencia de conversion A
-		seqa_enable_sequence();
+	SYSCON->SYSAHBCLKCTRL0 &= ~(1 << 18);	//	Disables IOCON Clk to Save Power
+}
 
-		// Habilitamos interrupciones para fin de conversion de secuencia A
-		inten_enable_seqa();
+void Adc::enableInt(bool enOvr, adcThresholdComparison_t enCmp){
+	uint8_t cmpShift = (3 + (m_adcChannel * 2));
+	ADC->INTEN |= ((1 << m_adcSequence) | (enOvr << 2) | (enCmp << cmpShift));
+	if(enCmp == adcThresholdComparison_t::DISABLED)
+		ADC->INTEN &= ~(0x3 << cmpShift);
+}
 
-		setStepMode() ;
-
-		g_adc[ 0 ] = this ;
-
-		NVIC->ISER[0] |= (1 << ISE_ADC_SEQA);
-
-		start_conversion( );
+void Adc::disableInt(bool disOvr, bool disCmp){
+	if(disCmp){
+		uint8_t cmpShift = (3 + (m_adcChannel * 2));
+		ADC->INTEN &= ~((1 << m_adcSequence) | (disOvr << 2) | (0x3 << cmpShift));
+	}else{
+		ADC->INTEN &= ~((1 << m_adcSequence) | (disOvr << 2));
 	}
 }
 
-Adc::~Adc()
-{
-	// TODO Auto-generated destructor stub
-}
-void Adc::seqa_set_mode_end_of_conversion(void)
-{
-	ADC->SEQ_CTRL[0] &= ~(1 << 30);//SEQA_CTR
+void Adc::enableNVIC_int(bool enOvr, bool enCmp){
+	uint8_t seqShift = ADC0_SEQA_IRQn + m_adcSequence;
+	NVIC->ISER[0] = ((1 << seqShift) | (enCmp << ADC0_THCMP_IRQn) | (enOvr << ADC0_OVR_IRQn));
 }
 
-void Adc::seqa_set_mode_end_of_sequence(void)
-{
-	ADC->SEQ_CTRL[0] |= (1 << 30);	//SEQA_CTR
+void Adc::disableNVIC_int(bool disOvr, bool disCmp){
+	uint8_t seqShift = ADC0_SEQA_IRQn + m_adcSequence;
+	NVIC->ICER[0] = ((1 << seqShift) | (disCmp << ADC0_THCMP_IRQn) | (disOvr << ADC0_OVR_IRQn));
 }
 
-void Adc::set_clkdiv(uint8_t div)
-{
-	ADC->CTRL &= ~0x000000FF;	//SEQA_CTRL
-	ADC->CTRL |= div;			//SEQA_CTRL
+bool Adc::triggerSingleSeqConversion(void){
+	if(m_burstFlag)	return false;	//	Cant Start Single Sequence Conversion if Burst Was Asked in SEQx_CTRL
+
+	ADC->SEQ_CTRL[m_adcSequence] |= (1 << 26);	//	START Bit (Software Single Trigger)
+
+	return true;
 }
 
-void Adc::seqa_set_channels(uint16_t channel)
-{
-	uint32_t channels = 0;
+Adc::adcChannel_t Adc::getChannel(void){ return m_adcChannel; }
 
-	channels = 1 << channel ;
-	ADC->SEQ_CTRL[0] |= (channels & 0x03FF) ; 	//SEQA_CTRL
-}
-
-void Adc::seqa_enable_sequence(void)
-{
-	ADC->SEQ_CTRL[0] |= (1 << 31) ; //SEQA_CTRL
-}
-
-void Adc::inten_enable_seqa(void)
-{
-	ADC->INTEN |= (1 << INT_SEQ_A) ;
-}
-
-
-void Adc::start_conversion(void)
-{
-	ADC->SEQ_CTRL[0] |= (1 << 26) ; //SEQA_CTRL
-}
-
-uint32_t Adc::finished(uint16_t *channel_0, uint16_t *channel_1)
-{
-	// NOTA: Guardo el valor actual del NVIC_ISER dado que de no hacerlo, por alguna razon
-	// que al momento no logro descifrar, tambien inhabilita las interrupciones del periferico
-	// USART pero luego no vuelve a habilitarlas
+uint32_t Adc::getValue(adcValueFilter_t filter){
 	uint32_t ret = 0;
-	uint32_t aux ;
 
-	aux = NVIC->ISER[0] ;
-	NVIC->ICER[0] |= (1 << 16);
+	switch(filter){
+		case adcValueFilter_t::F_NONE:
+			ret = m_adcLastSample;
+			break;
 
-	if (m_finished)
-	{
-		m_finished = 0;
-		ret = 1;
+		case adcValueFilter_t::F_MEAN:
+			ret = Statistics::mean(m_adcSamplesBuff, Adc::TOTAL_ADC_SAMPLES);
+			break;
+
+		case adcValueFilter_t::F_MEDIAN:
+			break;
+
+		default:
+			//	ERROR
+			break;
 	}
-	NVIC->ISER[0] |= ( aux | (1 << 16) );
-
 	return ret;
 }
 
-void Adc::setBurstMode(void) {
-	ADC->SEQ_CTRL[0] &= ~(1<<START);
-	ADC->SEQ_CTRL[0] &= ~(1<<SINGLESTEP);
-	ADC->SEQ_CTRL[0] |= (1<<BURST);
-}
+void ADC_SEQA_IRQHandler(void){
+	uint32_t SEQA_DAT = ADC->SEQ_GDAT[0];
+	Adc::adcChannel_t channel = (Adc::adcChannel_t)((SEQA_DAT >> 26) & 0xF);
+	uint16_t sample = ((SEQA_DAT >> 4) & 0xFFF);
 
-void Adc::setSingleSequenceMode(void) {
-	ADC->SEQ_CTRL[0] &= ~(1<<SINGLESTEP);
-	ADC->SEQ_CTRL[0] &= ~(1<<BURST);
-	ADC->SEQ_CTRL[0] |= (1<<START);
-}
-
-void Adc::setStepMode(void) {
-	ADC->SEQ_CTRL[0] &= ~(1<<BURST);
-	ADC->SEQ_CTRL[0] &= ~(1<<START);
-	ADC->SEQ_CTRL[0] |= (1<<SINGLESTEP);
-}
-
-
-void Adc::ADC_seqA_IRQHandler(void)
-{
-	uint32_t resultado;
-	uint8_t canal ;
-
-	resultado =  ADC->SEQ_GDAT[0];
-	canal = ( resultado >> 26 ) & 0xf;
-
-	switch ( m_TipoDeFiltro )
-	{
-		case CRUDO:
-			g_result[ canal ][ 0 ] = ((resultado >> 4) & 0xFFF);
-			break;
-		case PROMEDIO:
-		case CALLBACK:
-
-			g_result[ canal ][CanalesHabilitados[canal].Indice] = ((resultado >> 4) & 0xFFF);
-
-			break;
-	}
-	CanalesHabilitados[canal].Indice ++;
-	CanalesHabilitados[canal].Indice %= TAMANIO_BUFFER_ADC;
-	start_conversion( );
-
-	// Esta interrupcion va a ser generada cuando se haya convertido una secuencia completa de los dos canales
-	// Para limpiar el flag de interrupcion en estos casos, hay que escribir un 1 en SEQA_INT del registro FLAGS
-	//ADC0->FLAGS |= (1 << 28);
-	m_finished = 1;
-	// El resultado se encuentra en los bits 15:4 de los registros, pero esa conversion la haremos en la funcion adc_finished
-}
-void Adc::ADC_seqB_IRQHandler(void)
-{
-	return ;
-}
-void Adc::ADC_thcmp_IRQHandler(void)
-{
-	return ;
-}
-void Adc::ADC_ovr_IRQHandler(void)
-{
-	return ;
-}
-
-void Adc::calibrateADC(void){
-
-	uint32_t temporal;
-    uint32_t frecuencia = 0U;
-
-	// 4-Calibra ADC
-	//a-Se debe obtener la frecuencia del ADC
-	frecuencia = FREQ_CLOCK;
-	temporal = ADC->CTRL;
-	//b-Se debe llevar la frecuencia del ADC a 500kHz
-	ADC->CTRL &= ~(0xFFU);
-	ADC->CTRL |= (((uint32_t)(((uint32_t)((frecuencia / 500000U) - 1U)) << (0U))) & (0xFFU));
-	/* Clear the LPWR bit. */
-	ADC->CTRL &= ~(0x400U);
-
-	/* Start ADC self-calibration. */
-	ADC->CTRL |= (0x40000000U);
-
-	while( ADC->CTRL &= 0x40000000) {
-		// No hago nada hasta que no termine la calibracion del ADC.
-	};
-
-	/* Restore the contents of the ADC CTRL register. */
-	ADC->CTRL = temporal;
-}
-
-void Adc::setFiltro (uint32_t tipo) {
-
-	switch (tipo) {
-
-		case PROMEDIO:
-			m_TipoDeFiltro = PROMEDIO;
-			break;
-
-		case CRUDO:
-		default:
-			m_TipoDeFiltro = CRUDO;
-			break;
+	for(uint8_t idx = 0; idx < Adc::TOTAL_ADC_CHANNELS; idx++){
+		if(adcInstance[idx] != nullptr){
+			if(adcInstance[idx]->getChannel() == channel){
+				adcInstance[idx]->m_adcLastSample = sample;
+				adcInstance[idx]->m_adcSamplesBuff[adcInstance[idx]->m_adcSamplesBuffIndex++] = sample;
+				if(adcInstance[idx]->m_adcSamplesBuffIndex >= Adc::TOTAL_ADC_SAMPLES)	//	Faster than %=
+					adcInstance[idx]->m_adcSamplesBuffIndex = 0;
+				break;	//	Out of For
+			}
+		}
 	}
 }
 
-void ADC_SEQA_IRQHandler(void)
-{
-	if ( g_adc[0] )
-		g_adc[0]->ADC_seqA_IRQHandler( );
-}
+void ADC_SEQB_IRQHandler(void){
+	uint32_t SEQB_DAT = ADC->SEQ_GDAT[1];
+	Adc::adcChannel_t channel = (Adc::adcChannel_t)((SEQB_DAT >> 26) & 0xF);
+	uint16_t sample = ((SEQB_DAT >> 4) & 0xFFF);
 
-void ADC_SEQB_IRQHandler(void)
-{
-	if ( g_adc[1] )
-		g_adc[1]->ADC_seqB_IRQHandler( );
-
-}
-void ADC_THCMP_IRQHandler(void)
-{
-	if ( g_adc[2] )
-		g_adc[2]->ADC_thcmp_IRQHandler( );
-
-}
-void ADC_OVR_IRQHandler(void)
-{
-	if ( g_adc[3] )
-		g_adc[3]->ADC_ovr_IRQHandler( );
-
-}
-
-int32_t Adc::getResultado(void) {
-
-	uint32_t resultadoParcial;
-
-	switch ( m_TipoDeFiltro )
-	{
-		case CRUDO :
-			resultadoParcial = g_result[m_NumeroCanal][0];
-			break;
-		case PROMEDIO:
-			resultadoParcial = promedio( );
-			break;
-		case CALLBACK:
-			resultadoParcial = promedio( );
-			resultadoParcial = m_callback ( resultadoParcial );
-			break;
+	for(uint8_t idx = 0; idx < Adc::TOTAL_ADC_CHANNELS; idx++){
+		if(adcInstance[idx]->getChannel() == channel){
+			adcInstance[idx]->m_adcLastSample = sample;
+			adcInstance[idx]->m_adcSamplesBuff[adcInstance[idx]->m_adcSamplesBuffIndex++] = sample;
+			if(adcInstance[idx]->m_adcSamplesBuffIndex >= Adc::TOTAL_ADC_SAMPLES)	//	Faster than %=
+				adcInstance[idx]->m_adcSamplesBuffIndex = 0;
+			break;	//	Out of For
+		}
 	}
-
-	return resultadoParcial;
 }
 
-uint32_t Adc::promedio( void )
-{
-	uint32_t resultadoParcial = 0;
-	for (uint32_t i=0 ; i < TAMANIO_BUFFER_ADC ; i++)
-		resultadoParcial += g_result[m_NumeroCanal][i];
-	resultadoParcial /= TAMANIO_BUFFER_ADC;
-	return resultadoParcial ;
+void ADC_THCMP_IRQHandler(void){
+
 }
+
+void ADC_OVR_IRQHandler(void){
+
+}
+
+Adc::~Adc(){}
+*/

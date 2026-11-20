@@ -15,7 +15,7 @@
 
 #include "eth.h"
 
-Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Spi::SPI_SLAVE_SELECT_ACTIVE_LOW), m_timeoutTimer(5, SysTimer::SINGLE, SysTimer::T_SEG){
+Eth::Eth(bool portCS, uint8_t pinCS, Spi &spi) : SpiSlave(portCS, pinCS, spi, Spi::SPI_SLAVE_SELECT_ACTIVE_LOW), m_timeoutTimer(30, SysTimer::SINGLE, SysTimer::T_SEG){
 	m_socketTransferDone = false;
 	m_usrDoneFlag = nullptr;
 	m_initFinishedFlag = false;

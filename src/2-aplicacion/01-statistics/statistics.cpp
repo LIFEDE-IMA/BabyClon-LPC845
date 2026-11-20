@@ -12,6 +12,16 @@
 
 Statistics::Statistics(){}
 
+uint32_t Statistics::mean(void *vec, uint8_t size){
+	uint32_t ret = 0;
+	uint32_t *castVec = (uint32_t *)vec;
+
+	for(uint8_t idx = 0; idx < size; idx++)
+		ret += castVec[idx];
+
+	return (ret / size);
+}
+
 float Statistics::median(const float *vec, uint8_t size){
 	float *aux = new float[size];
 	float largest, ret = 0;
