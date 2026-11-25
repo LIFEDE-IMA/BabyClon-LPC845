@@ -578,6 +578,7 @@ void owMDE(void){
 
 					if(currentOwMeasures >= MAX_OW_MEASURES){
 						owState = owStates_t::OW_IDLE;
+						currentOwMeasures = 0;
 						searchROMtimer.startTimer();	//	SEARCH_ROM Only After MAX_OW_MEASURES
 					}else{
 						if(f_btOwSampleTimeChangeAsked){	//	App Asked Sample Time Change, Wait Till Current Sample Finishes to Change It
@@ -642,11 +643,11 @@ void mlxMDE(void){
 						readMlxTempTimer.setTimer(btSampleTimeSetter, btTimeBaseSetter);
 						f_btMlxSampleTimeChangeAsked = false;
 					}
-
-			    	readMlxTempTimer.startTimer();
 				}else if(mlx90614.hasError()){
 					MLX90614::mlxStatus_t status = mlx90614.getStatus();
 				}
+
+		    	readMlxTempTimer.startTimer();
 
 				mlxState = mlxStates_t::MLX_IDLE;
 			}
